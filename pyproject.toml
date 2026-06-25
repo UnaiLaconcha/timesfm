@@ -34,6 +34,14 @@ xreg = [
     "jax[cuda]",
     "scikit-learn",
 ]
+quant = [
+    "torch>=2.0.0",
+    "streamlit>=1.35.0",
+    "plotly>=5.0.0",
+    "pandas>=2.0.0",
+    "python-binance>=1.0.0",
+]
+
 
 [tool.ruff]
 line-length = 88
