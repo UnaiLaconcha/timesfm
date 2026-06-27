@@ -565,6 +565,31 @@ def style_trades(df):
     return display_df
 
 
+def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, tp_pct, th_pct, init_cap, overl, max_pos):
+    name = st.session_state.get("strategy_name_input_key", "").strip()
+    if not name:
+        st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia antes de guardar.")
+    else:
+        clean_name = name.replace(" ", "_")
+        params_to_save = {
+            "symbol": sym,
+            "interval": intv,
+            "start_date": s_date.isoformat(),
+            "end_date": e_date.isoformat(),
+            "context_len": c_len,
+            "horizon_len": h_len,
+            "step_size": s_size,
+            "stop_loss_pct": sl_pct * 100,
+            "take_profit_pct": tp_pct * 100,
+            "threshold_pct": th_pct * 100,
+            "initial_capital": init_cap,
+            "overlapping": overl,
+            "max_positions": max_pos,
+        }
+        _save_strategy(clean_name, params_to_save)
+        st.session_state["save_status"] = ("success", f"✅ Estrategia **{clean_name}** guardada correctamente.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN LOGIC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -641,34 +666,25 @@ if run_btn:
         # ── Strategy save ──
         st.markdown('<div class="section-label">💾 GUARDAR ESTRATEGIA</div>', unsafe_allow_html=True)
         save_col1, save_col2 = st.columns([3, 1])
-        strategy_name_input = save_col1.text_input(
+        save_col1.text_input(
             "Nombre de la Estrategia",
             placeholder="Ej: BTC_1h_aggresiva_v2",
             label_visibility="collapsed",
+            key="strategy_name_input_key"
         )
-        save_clicked = save_col2.button("💾 Guardar", use_container_width=True)
-        if save_clicked:
-            if not strategy_name_input or not strategy_name_input.strip():
-                st.warning("⚠️ Escribe un nombre para la estrategia antes de guardar.")
+        save_col2.button(
+            "💾 Guardar",
+            use_container_width=True,
+            on_click=_on_save_clicked,
+            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, take_profit_pct, threshold_pct, initial_capital, overlapping, max_positions)
+        )
+        if "save_status" in st.session_state:
+            msg_type, msg_text = st.session_state["save_status"]
+            if msg_type == "warning":
+                st.warning(msg_text)
             else:
-                clean_name = strategy_name_input.strip().replace(" ", "_")
-                params_to_save = {
-                    "symbol": symbol,
-                    "interval": interval,
-                    "start_date": start_date.isoformat(),
-                    "end_date": end_date.isoformat(),
-                    "context_len": context_len,
-                    "horizon_len": horizon_len,
-                    "step_size": step_size,
-                    "stop_loss_pct": stop_loss_pct * 100,   # Store as % for readability
-                    "take_profit_pct": take_profit_pct * 100,
-                    "threshold_pct": threshold_pct * 100,
-                    "initial_capital": initial_capital,
-                    "overlapping": overlapping,
-                    "max_positions": max_positions,
-                }
-                saved_path = _save_strategy(clean_name, params_to_save)
-                st.success(f"✅ Estrategia **{clean_name}** guardada correctamente.")
+                st.success(msg_text)
+            del st.session_state["save_status"]
 
         st.markdown('<div class="section-label">CURVA DE EQUIDAD</div>', unsafe_allow_html=True)
         fig_equity = build_equity_chart(equity_df, df, context_len, float(initial_capital))
