@@ -533,6 +533,18 @@ if run_btn:
         st.markdown('<div class="section-label">CURVA DE EQUIDAD</div>', unsafe_allow_html=True)
         fig_equity = build_equity_chart(equity_df, df, context_len, float(initial_capital))
         st.plotly_chart(fig_equity, use_container_width=True)
+        st.markdown(
+            "<div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #00FFA3;'>"
+            "💡 <b>¿Qué significa la Curva de Equidad?</b><br>"
+            "<span style='color:#A0AEC0; font-size: 0.9em;'>"
+            "Este gráfico representa la evolución de tu capital a lo largo del tiempo. "
+            "<ul>"
+            "<li>La <b>línea verde continua (Estrategia TimesFM)</b> muestra cómo crece o disminuye tu dinero aplicando automáticamente las operaciones predictivas del bot.</li>"
+            "<li>La <b>línea azul punteada (Buy & Hold)</b> simula qué hubiera pasado si simplemente compraras el activo el primer día y lo mantuvieras sin hacer nada.</li>"
+            "</ul>"
+            "Es la visualización más importante para saber si el algoritmo realmente está superando al mercado o si el riesgo asumido no compensa el rendimiento."
+            "</span></div>", unsafe_allow_html=True
+        )
 
     # TAB 2 — GRÁFICOS AVANZADOS
     with tab2:
@@ -546,6 +558,18 @@ if run_btn:
         leg_cols[1].markdown("🔴 **▼ ENTER SHORT** — Apertura corta")
         leg_cols[2].markdown("🟠 **✕ STOP LOSS** — Cierre por SL")
         leg_cols[3].markdown("🔵 **● CLOSE** — Cierre por señal")
+        st.markdown(
+            "<br><div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #3B82F6;'>"
+            "💡 <b>Análisis de la Vista Avanzada</b><br>"
+            "<span style='color:#A0AEC0; font-size: 0.9em;'>"
+            "Este gráfico profesional se divide en tres paneles sincronizados para un análisis técnico completo:"
+            "<ul>"
+            "<li><b>1. Precio y Señales (Arriba):</b> Es un gráfico de velas japonesas clásicas que muestra la acción del precio. Sobre él, se dibujan marcas triangulares (verde/rojo) que indican el momento exacto donde el bot entró en una operación, y círculos/cruces cuando salió, permitiéndote auditar visualmente el momento de cada decisión.</li>"
+            "<li><b>2. Drawdown (Medio):</b> El <i>Drawdown</i> mide el riesgo y el 'sufrimiento' de la estrategia. Representa la caída porcentual de tu capital respecto a su pico histórico más alto. Si el gráfico llega a -10%, significa que desde tu punto de mayor riqueza, perdiste un 10%. Un buen algoritmo busca mantener este valle lo menos profundo posible. Un Drawdown constante de 0% significa que tu cuenta está en máximos históricos.</li>"
+            "<li><b>3. Volumen (Abajo):</b> Muestra la cantidad de criptomonedas negociadas en cada vela. Es útil para confirmar si los movimientos de precio y las entradas del bot estuvieron respaldados por una alta participación del mercado.</li>"
+            "</ul>"
+            "</span></div>", unsafe_allow_html=True
+        )
 
     # TAB 3 — HEATMAP
     with tab3:
@@ -555,6 +579,18 @@ if run_btn:
         if fig_heat is not None:
             st.plotly_chart(fig_heat, use_container_width=True)
             st.caption("Verde = meses rentables · Rojo = meses con pérdidas.")
+            st.markdown(
+                "<div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #F59E0B;'>"
+                "💡 <b>Interpretación del Mapa de Calor</b><br>"
+                "<span style='color:#A0AEC0; font-size: 0.9em;'>"
+                "El Heatmap desglosa la rentabilidad del bot dividiéndola por meses y años."
+                "<ul>"
+                "<li><b>Casillas Verdes:</b> Indican meses cerrados con beneficios netos. Cuanto más brillante es el verde, mayor fue la rentabilidad de ese mes.</li>"
+                "<li><b>Casillas Rojas:</b> Indican meses cerrados en negativo. Cuanto más intenso es el rojo, mayores fueron las pérdidas.</li>"
+                "</ul>"
+                "Esta matriz es vital para evaluar la <i>consistencia</i> del algoritmo. Un buen bot puede tener meses en rojo, pero en el cómputo general (las columnas de totales) debería mostrar un rendimiento verde y sólido, evitando grandes rachas perdedoras continuas."
+                "</span></div>", unsafe_allow_html=True
+            )
         else:
             st.info("No hay suficientes datos para generar el heatmap mensual. "
                     "Prueba con un historial de al menos 2 meses.")
@@ -565,6 +601,19 @@ if run_btn:
                     unsafe_allow_html=True)
         if not trades_df.empty:
             st.dataframe(style_trades(trades_df), use_container_width=True, height=400)
+            st.markdown(
+                "<div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #8B5CF6;'>"
+                "💡 <b>Entendiendo el Libro de Órdenes (Trade Log)</b><br>"
+                "<span style='color:#A0AEC0; font-size: 0.9em;'>"
+                "Esta tabla es el registro contable absoluto de todas las acciones del sistema."
+                "<ul>"
+                "<li><b>Type:</b> Indica la naturaleza de la operación (ej. <i>ENTER_LONG</i> para comprar apostando a que sube, <i>CLOSE_SHORT_TP</i> para cerrar una venta con beneficios).</li>"
+                "<li><b>Price:</b> El precio exacto del mercado en el momento en que se ejecutó la orden.</li>"
+                "<li><b>Capital:</b> Tu balance actualizado después de cerrar la operación y <b>después de haber pagado las comisiones (Taker Fees)</b> al exchange.</li>"
+                "</ul>"
+                "Puedes usarla para rastrear la anatomía de una ganancia o pérdida concreta que hayas visto en los gráficos de las otras pestañas."
+                "</span></div>", unsafe_allow_html=True
+            )
 
             entry_types = {'ENTER_LONG', 'ENTER_SHORT'}
             sl_types    = {'CLOSE_LONG_SL', 'CLOSE_SHORT_SL'}

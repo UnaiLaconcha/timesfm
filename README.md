@@ -122,7 +122,7 @@ model = timesfm.TimesFM_2p5_200M_torch.from_pretrained("google/timesfm-2.5-200m-
 
 model.compile(
     timesfm.ForecastConfig(
-        max_context=1024,
+        max_context=4096,
         max_horizon=256,
         normalize_inputs=True,
         use_continuous_quantile_head=True,
