@@ -77,7 +77,7 @@ El sistema de backtesting simula la ejecución paso a paso (Walk-Forward) a lo l
 * **`Stop Loss (%)` (`stop_loss_pct`)**: Límite máximo de pérdidas. Si el precio se mueve en contra de la posición por este porcentaje o más desde el punto de entrada, la operación se cierra inmediatamente.
 * **`Take Profit (%)` (`take_profit_pct`)**: Objetivo de ganancias. Si el precio se mueve a favor de la posición por este porcentaje o más desde el punto de entrada, la posición se liquida para asegurar las ganancias. Si se configura en `0%`, queda deshabilitado.
 
-### 3.2. Ciclo de Vida de una Operación
+### 3.2. Ciclo de Vida de una Operación (Modo Secuencial)
 1. **Evaluación de Señales:** En cada paso del bucle (definido por `step_size`):
    * Se extraen las últimas `context_len` velas hasta el índice actual.
    * Se invoca el modelo `TimesFM` para generar la predicción sobre las próximas `horizon_len` velas.
@@ -92,6 +92,17 @@ El sistema de backtesting simula la ejecución paso a paso (Walk-Forward) a lo l
    * **Take Profit (TP):** Si el precio alcanza el objetivo de ganancias establecido (`take_profit_pct`), la operación se liquida para asegurar las ganancias.
    * **Cierre por Fin de Historial:** Si la simulación termina y aún hay una posición abierta, se fuerza el cierre en la última vela disponible.
    * Al cerrar, se calcula el capital resultante final y se descuenta la comisión de salida (`0.04%`).
+
+### 3.3. Modo de Operaciones Simultáneas (Overlapping Trades)
+Cuando el checkbox **"Operaciones Simultáneas"** está activado en el dashboard (`overlapping=True`), el motor permite mantener hasta `max_positions` operaciones abiertas simultáneamente (configurable de 2 a 10).
+* **Modelo de Asignación de Capital:** Para evitar inflar o distorsionar los resultados, el sistema utiliza un pool de capital no invertido (`available_capital`). Cuando el modelo genera una nueva señal y hay slots disponibles (`len(active_positions) < max_positions`), a la nueva posición se le asigna una porción equitativa del capital disponible (`available_capital / slots_restantes`).
+* **Monitoreo Independiente:** En cada paso temporal, el sistema comprueba individualmente los niveles de Stop-Loss y Take-Profit de **todas** las posiciones activas. Cada posición se liquida de forma independiente cuando alcanza sus objetivos.
+* **Composición de Equidad:** La curva de equidad en cada paso se calcula sumando el capital no invertido más la valoración mark-to-market actual de todas las operaciones abiertas.
+
+### 3.4. Guardado y Carga de Estrategias (Config Management)
+El sistema incluye un gestor de configuraciones en formato JSON guardados en la carpeta `src/quant_system/saved_strategies/`.
+* **Guardar Estrategia:** En la pestaña "📊 Resumen", el usuario puede escribir un nombre y pulsar "💾 Guardar". Esto serializa todos los hiperparámetros actuales (activo, intervalo, fechas, context, horizon, step size, riesgo y modo de ejecución) en un archivo `.json`.
+* **Cargar Estrategia:** En la parte superior del panel lateral izquierdo, el desplegable "Cargar Estrategia Guardada" muestra todos los archivos guardados. Al seleccionar uno, el sistema inyecta los parámetros en `st.session_state` y fuerza un refresco visual (`st.rerun()`), actualizando instantáneamente todos los sliders e inputs del dashboard.
 
 ---
 
@@ -111,7 +122,7 @@ Si eres un modelo de Inteligencia Artificial leyendo esto para mejorar el sistem
 3. **Gestión de Riesgo Avanzada (Uso de Cuantiles):**
    Actualmente el motor usa `point_fc[-1]` (el pronóstico mediano) para decidir la dirección. **Tarea futura:** Modificar `backtester.py` para que lea `quant_fc` (por ejemplo el cuantil 10 y el cuantil 90) y no opere si la banda de incertidumbre/riesgo es muy ancha.
 4. **Position Sizing Dinámico:**
-   Actualmente el bot apuesta el 100% de su equidad en cada operación (`capital *= ...`). **Tarea futura:** Añadir una fracción de Kelly o un modelo de riesgo fijo (ej. arriesgar solo el 2% del capital en caso de tocar Stop-Loss) en lugar de *all-in*.
+   Actualmente el bot apuesta su porción asignada en cada operación. **Tarea futura:** Añadir una fracción de Kelly o un modelo de riesgo fijo (ej. arriesgar solo el 2% del capital en caso de tocar Stop-Loss).
 5. **Comisiones de Funding (Futuros):**
    Si la estrategia es de Futuros Perpetuos, **Tarea futura:** añadir las *Funding Rates* periódicas que se cobran/pagan por mantener posiciones Short/Long prolongadas.
 
@@ -123,15 +134,10 @@ El dashboard actual actúa como el centro de control del sistema de backtesting.
 
 **Implementación Actual:**
 * **Tecnología:** `Streamlit` para el renderizado web y reactividad, `Plotly Graph Objects` para los gráficos.
-* **Sidebar (Panel Lateral):** Contiene todos los selectores de hiperparámetros: Activo (ej. BTCUSDT), intervalo, cantidad de historial, variables del modelo (`context_len`, `horizon_len`) y variables de riesgo (Stop-loss y Umbral).
+* **Sidebar (Panel Lateral):** Contiene el gestor de estrategias guardadas, selectores de activo, intervalo, fechas, parámetros del modelo (`context_len`, `horizon_len`, `step_size`), gestión de riesgo (Stop-Loss, Take-Profit, Umbral) y el modo de ejecución simultánea con slider de posiciones máximas.
 * **Panel Principal:**
-  * Usa columnas (`st.columns`) para exponer los KPIs (Métricas de rendimiento: Retorno, Sharpe, Max Drawdown).
-  * Renderiza un gráfico interactivo (`st.plotly_chart`) mostrando la comparación directa entre la Estrategia TimesFM (Equity Curve) y el escenario *Buy & Hold*.
-  * Muestra una tabla con el registro completo de operaciones (`st.dataframe`).
-  * Incluye una explicación dinámica en formato Markdown de la estrategia inversa simulada, para que los usuarios no técnicos entiendan bajo qué parámetros operó el bot.
+  * **Pestaña 📊 Resumen:** KPIs principales, guardado de estrategias en JSON y la gráfico interactivo de Curva de Equidad vs Buy & Hold.
+  * **Pestaña 🕯️ Gráficos Avanzados:** Gráfico profesional de velas OHLC con marcadores de compra/venta/SL/TP, gráfico de Drawdown subacuático y barras de Volumen.
+  * **Pestaña 🌡️ Rentabilidad Mensual:** Heatmap interactivo con matriz de retornos porcentuales por mes y año.
+  * **Pestaña 📋 Operaciones:** Tabla contable detallada (Trade Log) con contadores de entradas, cierres normales, TP y SL hit, e informe descriptivo de la estrategia.
 
-**🤖 Tareas de mejora para futuros modelos de IA (Dashboard):**
-1. **Gráficos Avanzados:** Incorporar un gráfico de velas japonesas (*Candlestick chart*) de Plotly que superponga las señales de compra (triángulos verdes) y venta (triángulos rojos) directamente sobre el precio.
-2. **Análisis de Drawdown:** Añadir un sub-gráfico debajo de la curva de equidad que muestre las zonas de pérdida continua (Drawdown subacuático) para tener una visión clara del riesgo.
-3. **Distribución de Retornos:** Agregar un histograma de retornos diarios/mensuales o una tabla de rendimiento mensual estilo "Heatmap".
-4. **Optimización de Parámetros:** Permitir que el usuario seleccione rangos en lugar de valores fijos y que el sistema devuelva un mapa de calor 3D identificando qué combinación de `stop_loss` y `threshold` da el mejor Sharpe Ratio.

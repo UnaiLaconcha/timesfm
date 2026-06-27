@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -217,32 +218,134 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STRATEGY MANAGEMENT — helpers
+# ─────────────────────────────────────────────────────────────────────────────
+STRATEGIES_DIR = os.path.join(os.path.dirname(__file__), "saved_strategies")
+
+def _ensure_strategies_dir():
+    os.makedirs(STRATEGIES_DIR, exist_ok=True)
+
+def _list_saved_strategies():
+    """Return sorted list of saved strategy names (without .json extension)."""
+    _ensure_strategies_dir()
+    files = [f[:-5] for f in os.listdir(STRATEGIES_DIR) if f.endswith(".json")]
+    return sorted(files)
+
+def _load_strategy(name):
+    """Load a strategy JSON and return its dict, or None on error."""
+    path = os.path.join(STRATEGIES_DIR, f"{name}.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+def _save_strategy(name, params):
+    """Persist strategy params as JSON."""
+    _ensure_strategies_dir()
+    path = os.path.join(STRATEGIES_DIR, f"{name}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(params, fh, indent=2, ensure_ascii=False, default=str)
+    return path
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRATEGY LOAD — apply loaded values into session_state BEFORE widgets render
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _apply_strategy_to_session_state(strategy_data):
+    """Write strategy values into session_state keys that match widget keys."""
+    key_map = {
+        "symbol":          "cfg_symbol",
+        "interval":        "cfg_interval",
+        "start_date":      "cfg_start_date",
+        "end_date":        "cfg_end_date",
+        "context_len":     "cfg_context_len",
+        "horizon_len":     "cfg_horizon_len",
+        "step_size":       "cfg_step_size",
+        "stop_loss_pct":   "cfg_stop_loss_pct",
+        "take_profit_pct": "cfg_take_profit_pct",
+        "threshold_pct":   "cfg_threshold_pct",
+        "initial_capital": "cfg_initial_capital",
+        "overlapping":     "cfg_overlapping",
+        "max_positions":   "cfg_max_positions",
+    }
+    for json_key, widget_key in key_map.items():
+        if json_key in strategy_data:
+            val = strategy_data[json_key]
+            # Date fields stored as ISO strings need conversion
+            if json_key in ("start_date", "end_date") and isinstance(val, str):
+                val = datetime.date.fromisoformat(val)
+            st.session_state[widget_key] = val
+
+# Check if a strategy load was requested on the previous run
+if st.session_state.get("_pending_strategy_load"):
+    strategy_name = st.session_state["_pending_strategy_load"]
+    data = _load_strategy(strategy_name)
+    if data:
+        _apply_strategy_to_session_state(data)
+    # Clear the flag so we don't reload every rerun
+    st.session_state["_pending_strategy_load"] = None
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Configuración")
     st.markdown("---")
 
+    # ── Strategy loader ──
+    st.markdown("### 📂 Estrategia Guardada")
+    saved_names = _list_saved_strategies()
+    strategy_options = ["Ninguna"] + saved_names
+
+    selected_strategy = st.selectbox(
+        "Cargar Estrategia Guardada",
+        strategy_options,
+        key="cfg_load_strategy",
+        help="Selecciona una estrategia guardada para restaurar todos los parámetros.",
+    )
+    if selected_strategy != "Ninguna" and selected_strategy != st.session_state.get("_last_loaded_strategy"):
+        # Set a pending load flag and rerun so values are injected before widgets render
+        st.session_state["_pending_strategy_load"] = selected_strategy
+        st.session_state["_last_loaded_strategy"] = selected_strategy
+        st.rerun()
+
+    st.markdown("---")
+
     st.markdown("### 📡 Activo & Datos")
-    symbol = st.text_input("Par de Trading", value="BTCUSDT")
-    interval = st.selectbox("Intervalo Temporal", ["1h", "4h", "1d"])
+    symbol = st.text_input("Par de Trading", value="BTCUSDT", key="cfg_symbol")
+
+    _interval_options = ["1h", "4h", "1d"]
+    interval = st.selectbox("Intervalo Temporal", _interval_options, key="cfg_interval")
+
     col_d1, col_d2 = st.columns(2)
-    start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1))
-    end_date = col_d2.date_input("Fecha Fin", value=datetime.date.today())
+    start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
+    end_date = col_d2.date_input("Fecha Fin", value=datetime.date.today(), key="cfg_end_date")
 
     st.markdown("### 🧠 Modelo TimesFM")
     context_len = st.slider("Context Length (velas)", 128, 1024, 512, 128,
-                             help="Número de velas históricas que recibe el modelo como contexto.")
+                             help="Número de velas históricas que recibe el modelo como contexto.",
+                             key="cfg_context_len")
     horizon_len = st.slider("Horizon Length (velas)", 1, 96, 24, 1,
-                             help="Cuántas velas en el futuro predice el modelo para tomar la decisión.")
+                             help="Cuántas velas en el futuro predice el modelo para tomar la decisión.",
+                             key="cfg_horizon_len")
     step_size = st.slider("Paso de Evaluación (velas)", 1, 24, 6, 1,
-                           help="Frecuencia (en velas) con la que se toman decisiones. Un valor de 1 evalúa cada hora/vela (lento), mientras que 6 evalúa cada 6 velas.")
+                           help="Frecuencia (en velas) con la que se toman decisiones. Un valor de 1 evalúa cada hora/vela (lento), mientras que 6 evalúa cada 6 velas.",
+                           key="cfg_step_size")
 
     st.markdown("### 🛡️ Gestión de Riesgo")
-    stop_loss_pct = st.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5) / 100.0
-    take_profit_pct = st.number_input("Take Profit (%)", min_value=0.0, max_value=30.0, value=4.0, step=0.5) / 100.0
-    threshold_pct = st.number_input("Umbral de Entrada (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1) / 100.0
-    initial_capital = st.number_input("Capital Inicial (USD)", min_value=100, max_value=100000, value=1000, step=100)
+    stop_loss_pct = st.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
+    take_profit_pct = st.number_input("Take Profit (%)", min_value=0.0, max_value=30.0, value=4.0, step=0.5, key="cfg_take_profit_pct") / 100.0
+    threshold_pct = st.number_input("Umbral de Entrada (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
+    initial_capital = st.number_input("Capital Inicial (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
+
+    st.markdown("### ⚡ Modo de Ejecución")
+    overlapping = st.checkbox("Operaciones Simultáneas", value=True, key="cfg_overlapping",
+                              help="Si está activo, se pueden abrir múltiples posiciones a la vez. Si no, solo una operación a la vez (modo clásico).")
+    if overlapping:
+        max_positions = st.slider("Máx. Posiciones Simultáneas", 2, 10, 5, 1, key="cfg_max_positions",
+                                  help="Número máximo de operaciones que pueden estar abiertas simultáneamente. El capital se reparte entre los slots disponibles.")
+    else:
+        max_positions = 1  # not used in single mode, but define for clarity
 
     st.markdown("---")
     run_btn = st.button("🚀 Ejecutar Backtest", use_container_width=True, type="primary")
@@ -510,7 +613,11 @@ if run_btn:
     with st.spinner("⚙️ Ejecutando simulación de backtesting..."):
         try:
             engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
-            results = engine.run_backtest(df, predictor, horizon_len, stop_loss_pct, threshold_pct, step_size=step_size, take_profit_pct=take_profit_pct)
+            results = engine.run_backtest(
+                df, predictor, horizon_len, stop_loss_pct, threshold_pct,
+                step_size=step_size, take_profit_pct=take_profit_pct,
+                overlapping=overlapping, max_positions=max_positions,
+            )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
             st.stop()
@@ -530,6 +637,39 @@ if run_btn:
     with tab1:
         st.markdown('<div class="section-label">KPIs PRINCIPALES</div>', unsafe_allow_html=True)
         render_kpis(metrics, float(initial_capital), final_equity)
+
+        # ── Strategy save ──
+        st.markdown('<div class="section-label">💾 GUARDAR ESTRATEGIA</div>', unsafe_allow_html=True)
+        save_col1, save_col2 = st.columns([3, 1])
+        strategy_name_input = save_col1.text_input(
+            "Nombre de la Estrategia",
+            placeholder="Ej: BTC_1h_aggresiva_v2",
+            label_visibility="collapsed",
+        )
+        save_clicked = save_col2.button("💾 Guardar", use_container_width=True)
+        if save_clicked:
+            if not strategy_name_input or not strategy_name_input.strip():
+                st.warning("⚠️ Escribe un nombre para la estrategia antes de guardar.")
+            else:
+                clean_name = strategy_name_input.strip().replace(" ", "_")
+                params_to_save = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "context_len": context_len,
+                    "horizon_len": horizon_len,
+                    "step_size": step_size,
+                    "stop_loss_pct": stop_loss_pct * 100,   # Store as % for readability
+                    "take_profit_pct": take_profit_pct * 100,
+                    "threshold_pct": threshold_pct * 100,
+                    "initial_capital": initial_capital,
+                    "overlapping": overlapping,
+                    "max_positions": max_positions,
+                }
+                saved_path = _save_strategy(clean_name, params_to_save)
+                st.success(f"✅ Estrategia **{clean_name}** guardada correctamente.")
+
         st.markdown('<div class="section-label">CURVA DE EQUIDAD</div>', unsafe_allow_html=True)
         fig_equity = build_equity_chart(equity_df, df, context_len, float(initial_capital))
         st.plotly_chart(fig_equity, use_container_width=True)
@@ -617,8 +757,10 @@ if run_btn:
 
             entry_types = {'ENTER_LONG', 'ENTER_SHORT'}
             sl_types    = {'CLOSE_LONG_SL', 'CLOSE_SHORT_SL'}
+            tp_types    = {'CLOSE_LONG_TP', 'CLOSE_SHORT_TP'}
             close_types = {'CLOSE_LONG', 'CLOSE_SHORT', 'CLOSE_LONG_END', 'CLOSE_SHORT_END'}
             n_sl      = len(trades_df[trades_df['type'].isin(sl_types)])
+            n_tp      = len(trades_df[trades_df['type'].isin(tp_types)])
             n_close   = len(trades_df[trades_df['type'].isin(close_types)])
             n_entries = len(trades_df[trades_df['type'].isin(entry_types)])
 
@@ -629,6 +771,8 @@ if run_btn:
                        <span class="stat-value white">{n_entries}</span></div>
                   <div><span class="stat-label">CIERRES NORMALES</span><br>
                        <span class="stat-value green">{n_close}</span></div>
+                  <div><span class="stat-label">TAKE PROFIT</span><br>
+                       <span class="stat-value green">{n_tp}</span></div>
                   <div><span class="stat-label">STOP-LOSS HIT</span><br>
                        <span class="stat-value red">{n_sl}</span></div>
                 </div>
@@ -638,6 +782,7 @@ if run_btn:
 
         st.markdown("---")
         with st.expander("📖 Estrategia Aplicada — Descripción Completa"):
+            mode_label = f"**Simultáneo** (máx. {max_positions} posiciones)" if overlapping else "**Secuencial** (1 posición a la vez)"
             st.markdown(f"""
 ### Modelo: TimesFM 2.5 (Google DeepMind)
 Un modelo fundacional de series temporales univariantes entrenado por Google. Opera en modo **zero-shot**
@@ -657,15 +802,14 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Umbral entrada | `{threshold_pct*100:.1f}%` de movimiento esperado |
 | Capital inicial | `${initial_capital:,}` USD |
 | Taker Fee | `0.04%` por operación (estándar Binance) |
+| Modo de Ejecución | {mode_label} |
 
 **Flujo de decisión:**
-1. En cada iteración (cada `{step_size}` velas), si no hay una posición abierta, el sistema extrae las últimas `{context_len}` velas como contexto y predice el precio al final del horizonte de `{horizon_len}` velas.
+1. En cada iteración (cada `{step_size}` velas), el sistema extrae las últimas `{context_len}` velas como contexto y predice el precio al final del horizonte de `{horizon_len}` velas.
 2. Si el movimiento esperado supera `+{threshold_pct*100:.1f}%` → **ENTER LONG**.
 3. Si el movimiento esperado es inferior a `-{threshold_pct*100:.1f}%` → **ENTER SHORT**.
-4. Una vez abierta la operación, **el modelo no vuelve a evaluar entradas ni salidas**. La operación **solo** se cerrará si ocurre una de las siguientes condiciones:
-   * **Long:** El precio sube `+{take_profit_pct*100:.1f}%` → **TAKE PROFIT** (si está habilitado), o cae `-{stop_loss_pct*100:.1f}%` → **STOP LOSS**.
-   * **Short:** El precio cae `-{take_profit_pct*100:.1f}%` → **TAKE PROFIT** (si está habilitado), o sube `+{stop_loss_pct*100:.1f}%` → **STOP LOSS**.
-   * **Fin de datos:** Si se llega al final del historial de backtesting, la posición se cierra obligatoriamente al precio de cierre de la última vela.
+4. Las operaciones se cierran por **Take Profit**, **Stop Loss** o fin de período.
+{'5. En modo simultáneo, cada nueva operación recibe una fracción del capital disponible. Varias posiciones pueden coexistir y cerrarse de forma independiente.' if overlapping else '5. En modo secuencial, no se evalúan nuevas señales hasta que la operación activa se cierre.'}
 """)
 
 else:
