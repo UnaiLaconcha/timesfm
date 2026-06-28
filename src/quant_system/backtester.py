@@ -7,7 +7,7 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short"):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None, symbol_name=""):
         """
         Runs a walk-forward backtest using TimesFM predictions for a single asset.
         trade_direction: 'Long & Short', 'Solo Long', or 'Solo Short'. Default is 'Long & Short'.
@@ -17,11 +17,11 @@ class BacktestEngine:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name)
 
-    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short"):
+    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None):
         """
         Runs a multi-asset portfolio backtest. Proportionally divides initial capital among assets,
         executes strategy per asset, and consolidates global portfolio metrics & equity curve.
@@ -37,7 +37,15 @@ class BacktestEngine:
         total_filtered = 0
         equity_series_list = []
 
-        for symbol, df_asset in df_dict.items():
+        for asset_idx, (symbol, df_asset) in enumerate(df_dict.items()):
+            def make_asset_cb(a_idx, a_sym):
+                def asset_cb(curr, tot, msg):
+                    if progress_callback:
+                        sub_pct = (curr / max(1, tot))
+                        overall_step = a_idx + sub_pct
+                        progress_callback(overall_step, num_assets, f"Evaluando {a_sym} ({a_idx+1}/{num_assets}): {msg}")
+                return asset_cb
+
             asset_engine = BacktestEngine(initial_capital=asset_initial_cap, fee_rate=self.fee_rate)
             res = asset_engine.run_backtest(
                 df_asset, model_predictor, horizon_len=horizon_len, stop_loss_pct=stop_loss_pct,
@@ -46,7 +54,8 @@ class BacktestEngine:
                 trailing_sl_pct=trailing_sl_pct, break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
-                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier, trade_direction=trade_direction
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier, trade_direction=trade_direction,
+                progress_callback=make_asset_cb(asset_idx, symbol), symbol_name=symbol
             )
             
             # Tag trades with asset symbol
@@ -83,22 +92,34 @@ class BacktestEngine:
             'combined_equity_grid': combined_equity_df
         }
 
-    def _precompute_forecasts(self, df, model_predictor, context_len, horizon_len, step_size):
+    def _precompute_forecasts(self, df, model_predictor, context_len, horizon_len, step_size, progress_callback=None, symbol_name=""):
         """Precompute batch forecasts for ultra-fast walk-forward iteration."""
         step_indices = list(range(context_len, len(df) - horizon_len, step_size))
+        total_steps = len(step_indices)
         if not step_indices:
             return {}
         
+        forecast_map = {}
         if hasattr(model_predictor, 'predict_batch'):
             try:
                 contexts = [df['close'].iloc[idx - context_len : idx].values.astype(np.float32) for idx in step_indices]
-                pt_batch, qt_batch = model_predictor.predict_batch(contexts)
-                return {step_indices[k]: (pt_batch[k], qt_batch[k] if len(qt_batch) > k else None) for k in range(len(step_indices))}
+                batch_size = 64
+                for b_start in range(0, total_steps, batch_size):
+                    b_end = min(b_start + batch_size, total_steps)
+                    b_contexts = contexts[b_start:b_end]
+                    pt_batch, qt_batch = model_predictor.predict_batch(b_contexts)
+                    for k in range(len(b_contexts)):
+                        forecast_map[step_indices[b_start + k]] = (pt_batch[k], qt_batch[k] if len(qt_batch) > k else None)
+                    
+                    if progress_callback:
+                        msg = f"Inferencia batch TimesFM ({b_end}/{total_steps} velas)"
+                        progress_callback(b_end, total_steps, msg)
+                return forecast_map
             except Exception:
                 pass
         return {}
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction):
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name=""):
         """Single-position backtest logic supporting trade direction filtering."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
@@ -111,7 +132,7 @@ class BacktestEngine:
         filtered_count = 0
         
         equity_curve = []
-        forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size)
+        forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size, progress_callback=progress_callback, symbol_name=symbol_name)
 
         for i in range(context_len, len(df) - horizon_len, step_size):
             current_idx = df.index[i]
@@ -287,13 +308,13 @@ class BacktestEngine:
             'metrics': metrics
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction):
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name=""):
         """Overlapping-positions backtest supporting trade direction filtering."""
         available_capital = self.initial_capital
         active_positions = []
         filtered_count = 0
         equity_curve = []
-        forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size)
+        forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size, progress_callback=progress_callback, symbol_name=symbol_name)
 
         for i in range(context_len, len(df) - horizon_len, step_size):
             current_idx = df.index[i]

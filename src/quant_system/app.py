@@ -846,79 +846,93 @@ def _on_save_clicked(an_mode, q_asset, t_dir, sym, port_syms, custom_port_syms, 
 # ─────────────────────────────────────────────────────────────────────────────
 if run_btn:
     df_dict = {}
-    with st.spinner("📡 Descargando datos históricos de Binance..."):
-        try:
-            if interval.endswith("m"):
-                minutes = int(interval[:-1])
-                delta = datetime.timedelta(minutes=minutes * int(context_len))
-            elif interval.endswith("h"):
-                hours = int(interval[:-1])
-                delta = datetime.timedelta(hours=hours * int(context_len))
-            elif interval.endswith("d"):
-                days = int(interval[:-1])
-                delta = datetime.timedelta(days=days * int(context_len))
-            elif interval.endswith("w"):
-                weeks = int(interval[:-1])
-                delta = datetime.timedelta(weeks=weeks * int(context_len))
-            elif interval.endswith("M"):
-                months = int(interval[:-1])
-                delta = datetime.timedelta(days=months * 30 * int(context_len))
-            else:
-                delta = datetime.timedelta(days=int(context_len))
+    progress_bar = st.progress(0, text="📡 Iniciando descarga de datos de Binance...")
+    try:
+        if interval.endswith("m"):
+            minutes = int(interval[:-1])
+            delta = datetime.timedelta(minutes=minutes * int(context_len))
+        elif interval.endswith("h"):
+            hours = int(interval[:-1])
+            delta = datetime.timedelta(hours=hours * int(context_len))
+        elif interval.endswith("d"):
+            days = int(interval[:-1])
+            delta = datetime.timedelta(days=days * int(context_len))
+        elif interval.endswith("w"):
+            weeks = int(interval[:-1])
+            delta = datetime.timedelta(weeks=weeks * int(context_len))
+        elif interval.endswith("M"):
+            months = int(interval[:-1])
+            delta = datetime.timedelta(days=months * 30 * int(context_len))
+        else:
+            delta = datetime.timedelta(days=int(context_len))
 
-            fetch_start = start_date - delta
-            start_str = fetch_start.strftime("%Y-%m-%d %H:%M:%S")
-            end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-            
-            loader = BinanceLoader()
-            for s in portfolio_symbols:
-                df_dict[s] = loader.fetch_historical_data(s, interval, start_str, end_str)
-        except Exception as e:
-            st.error(f"Error al descargar datos de Binance: {e}")
-            st.stop()
+        fetch_start = start_date - delta
+        start_str = fetch_start.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        loader = BinanceLoader()
+        total_syms = len(portfolio_symbols)
+        for idx, s in enumerate(portfolio_symbols):
+            p_val = int(15 * ((idx + 1) / total_syms))
+            progress_bar.progress(p_val, text=f"📡 Descargando datos Binance ({idx+1}/{total_syms}): {s}...")
+            df_dict[s] = loader.fetch_historical_data(s, interval, start_str, end_str)
+        progress_bar.progress(15, text="✅ Datos históricos descargados correctamente.")
+    except Exception as e:
+        progress_bar.empty()
+        st.error(f"Error al descargar datos de Binance: {e}")
+        st.stop()
 
     min_candles = min(len(df_dict[s]) for s in portfolio_symbols)
     if min_candles < context_len + horizon_len:
+        progress_bar.empty()
         st.error(f"⚠️ Se necesitan al menos **{context_len + horizon_len}** velas. Tienes {min_candles}.")
         st.stop()
 
-    with st.spinner("🧠 Cargando modelo TimesFM 2.5 (primera carga ~30s)..."):
-        try:
-            predictor = TimesFMPredictor(context_len=context_len, horizon_len=horizon_len)
-        except Exception as e:
-            st.error(f"Error al cargar el modelo TimesFM: {e}")
-            st.stop()
+    try:
+        progress_bar.progress(20, text="🧠 Cargando e inicializando modelo TimesFM 2.5 (PyTorch)...")
+        predictor = TimesFMPredictor(context_len=context_len, horizon_len=horizon_len)
+        progress_bar.progress(30, text="✅ Modelo TimesFM 2.5 preparado.")
+    except Exception as e:
+        progress_bar.empty()
+        st.error(f"Error al cargar el modelo TimesFM: {e}")
+        st.stop()
 
-    with st.spinner("⚡ Ejecutando simulación ultra-rápida (Batch Inferences)..."):
-        try:
-            engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
-            if analysis_mode == "Activo Único":
-                results = engine.run_backtest(
-                    df_dict[symbol], predictor, horizon_len, stop_loss_pct, threshold_pct,
-                    step_size=step_size, take_profit_pct=take_profit_pct,
-                    overlapping=overlapping, max_positions=max_positions,
-                    trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
-                    break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
-                    dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
-                    uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
-                    adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
-                    trade_direction=trade_direction
-                )
-            else:
-                results = engine.run_portfolio_backtest(
-                    df_dict, predictor, horizon_len, stop_loss_pct, threshold_pct,
-                    step_size=step_size, take_profit_pct=take_profit_pct,
-                    overlapping=overlapping, max_positions=max_positions,
-                    trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
-                    break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
-                    dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
-                    uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
-                    adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
-                    trade_direction=trade_direction
-                )
-        except Exception as e:
-            st.error(f"Error en el backtesting: {e}")
-            st.stop()
+    try:
+        def on_backtest_progress(current, total, msg):
+            pct = 30 + int(70 * (current / max(1, total)))
+            pct = max(30, min(99, pct))
+            progress_bar.progress(pct, text=f"⚡ {msg} ({int(pct)}%)")
+
+        engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
+        if analysis_mode == "Activo Único":
+            results = engine.run_backtest(
+                df_dict[symbol], predictor, horizon_len, stop_loss_pct, threshold_pct,
+                step_size=step_size, take_profit_pct=take_profit_pct,
+                overlapping=overlapping, max_positions=max_positions,
+                trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
+                break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
+                uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                trade_direction=trade_direction, progress_callback=on_backtest_progress, symbol_name=symbol
+            )
+        else:
+            results = engine.run_portfolio_backtest(
+                df_dict, predictor, horizon_len, stop_loss_pct, threshold_pct,
+                step_size=step_size, take_profit_pct=take_profit_pct,
+                overlapping=overlapping, max_positions=max_positions,
+                trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
+                break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
+                uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                trade_direction=trade_direction, progress_callback=on_backtest_progress
+            )
+        progress_bar.progress(100, text="🎉 ¡Simulación y optimización completadas exitosamente!")
+    except Exception as e:
+        progress_bar.empty()
+        st.error(f"Error en el backtesting: {e}")
+        st.stop()
 
     # Store active results in session_state to prevent resetting on tab selectbox changes
     st.session_state["active_results"] = results
