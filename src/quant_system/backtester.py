@@ -7,20 +7,21 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short"):
         """
         Runs a walk-forward backtest using TimesFM predictions for a single asset.
+        trade_direction: 'Long & Short', 'Solo Long', or 'Solo Short'. Default is 'Long & Short'.
         """
         context_len = model_predictor.context_len
         if len(df) < context_len + horizon_len:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction)
 
-    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0):
+    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short"):
         """
         Runs a multi-asset portfolio backtest. Proportionally divides initial capital among assets,
         executes strategy per asset, and consolidates global portfolio metrics & equity curve.
@@ -45,7 +46,7 @@ class BacktestEngine:
                 trailing_sl_pct=trailing_sl_pct, break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
-                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier, trade_direction=trade_direction
             )
             
             # Tag trades with asset symbol
@@ -97,8 +98,8 @@ class BacktestEngine:
                 pass
         return {}
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier):
-        """Single-position backtest logic supporting all risk management modes and institutional metrics."""
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction):
+        """Single-position backtest logic supporting trade direction filtering."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
         entry_price = 0
@@ -209,8 +210,11 @@ class BacktestEngine:
             expected_price = point_fc[-1]
             expected_move = (expected_price - current_price) / current_price
             
-            # Decision logic (only for position == 0)
-            if expected_move > threshold_pct or expected_move < -threshold_pct:
+            # Check direction filtering
+            is_long_signal = expected_move > threshold_pct and trade_direction in ["Long & Short", "Solo Long"]
+            is_short_signal = expected_move < -threshold_pct and trade_direction in ["Long & Short", "Solo Short"]
+
+            if is_long_signal or is_short_signal:
                 if uncertainty_filter and quant_fc is not None:
                     q10_price = quant_fc[-1, 0]
                     q90_price = quant_fc[-1, 8] if quant_fc.shape[1] > 8 else quant_fc[-1, -1]
@@ -227,7 +231,7 @@ class BacktestEngine:
                     calc_sl = vol_std * float(volatility_multiplier)
                     active_sl_pct = max(stop_loss_pct, calc_sl)
 
-                if expected_move > threshold_pct:
+                if is_long_signal:
                     position = 1
                     entry_price = current_price
                     extreme_price = current_price
@@ -242,7 +246,7 @@ class BacktestEngine:
                     capital *= (1 - self.fee_rate)
                     entry_cap_allocated = capital
                     self.trades.append({'time': current_idx, 'type': 'ENTER_LONG', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
-                elif expected_move < -threshold_pct:
+                elif is_short_signal:
                     position = -1
                     entry_price = current_price
                     extreme_price = current_price
@@ -283,8 +287,8 @@ class BacktestEngine:
             'metrics': metrics
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier):
-        """Overlapping-positions backtest with pre-batched forecasting and institutional metrics."""
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction):
+        """Overlapping-positions backtest supporting trade direction filtering."""
         available_capital = self.initial_capital
         active_positions = []
         filtered_count = 0
@@ -382,7 +386,10 @@ class BacktestEngine:
                 expected_price = point_fc[-1]
                 expected_move = (expected_price - current_price) / current_price
 
-                if expected_move > threshold_pct or expected_move < -threshold_pct:
+                is_long_signal = expected_move > threshold_pct and trade_direction in ["Long & Short", "Solo Long"]
+                is_short_signal = expected_move < -threshold_pct and trade_direction in ["Long & Short", "Solo Short"]
+
+                if is_long_signal or is_short_signal:
                     if uncertainty_filter and quant_fc is not None:
                         q10_price = quant_fc[-1, 0]
                         q90_price = quant_fc[-1, 8] if quant_fc.shape[1] > 8 else quant_fc[-1, -1]
@@ -396,7 +403,7 @@ class BacktestEngine:
                     alloc_capital_after_fee = alloc_capital * (1 - self.fee_rate)
                     available_capital -= alloc_capital
 
-                    direction = 1 if expected_move > threshold_pct else -1
+                    direction = 1 if is_long_signal else -1
                     trade_type = 'ENTER_LONG' if direction == 1 else 'ENTER_SHORT'
 
                     size_multiplier = 1.0

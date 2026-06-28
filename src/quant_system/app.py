@@ -9,6 +9,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import importlib
+
+import data_loader
+import model_inference
+import backtester
+
+importlib.reload(data_loader)
+importlib.reload(model_inference)
+importlib.reload(backtester)
 
 from data_loader import BinanceLoader
 from model_inference import TimesFMPredictor
@@ -300,6 +309,8 @@ def _apply_strategy_to_session_state(strategy_data):
     """Write strategy values into session_state keys that match widget keys."""
     key_map = {
         "analysis_mode":          "cfg_analysis_mode",
+        "quote_asset":            "cfg_quote_asset",
+        "trade_direction":        "cfg_trade_direction",
         "symbol":                 "cfg_symbol",
         "portfolio_symbols":      "cfg_portfolio_symbols",
         "custom_portfolio_symbols": "cfg_custom_portfolio_symbols",
@@ -369,43 +380,53 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 📡 Activo, Cartera & Capital")
-    analysis_mode = st.radio("Modo de Análisis", ["Activo Único", "Cartera Multi-Activo"], key="cfg_analysis_mode")
+    st.markdown("### 📡 Activo, Cartera & Mercado")
+    col_m1, col_m2 = st.columns(2)
+    analysis_mode = col_m1.radio("Modo Análisis", ["Activo Único", "Cartera Multi-Activo"], key="cfg_analysis_mode")
+    quote_asset = col_m2.selectbox("Moneda Cotización", ["USDT", "USDC"], index=0, key="cfg_quote_asset", help="Selecciona si deseas operar mercados en USDT o USDC.")
+
+    col_d1, col_d2 = st.columns(2)
+    trade_direction = col_d1.selectbox("Dirección Operaciones", ["Long & Short", "Solo Long", "Solo Short"], index=0, key="cfg_trade_direction", help="Por defecto está seleccionado Long & Short (ambas).")
     
+    all_intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+    interval = col_d2.selectbox("Intervalo", all_intervals, index=all_intervals.index("1d") if "1d" in all_intervals else 5, key="cfg_interval")
+
     col_cap1, col_cap2 = st.columns(2)
     initial_capital = col_cap1.number_input(
         "Capital Total ($)",
         min_value=10.0, max_value=10000000.0, value=1000.0, step=100.0,
         key="cfg_initial_capital",
-        help="Monto total en dólares a invertir en el activo único o a repartir proporcionalmente entre la cartera."
+        help="Monto total en dólares a invertir en el activo único o a repartir entre la cartera."
     )
-    
-    all_intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
-    interval = col_cap2.selectbox("Intervalo", all_intervals, index=all_intervals.index("1d") if "1d" in all_intervals else 5, key="cfg_interval")
+    start_date = col_cap2.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
+    end_date = st.date_input("Fecha Fin", value=datetime.date.today(), key="cfg_end_date")
+
+    base_cryptos = ["BTC", "ETH", "XRP", "LTC", "SOL", "BNB", "DOGE", "ADA", "AVAX", "SHIB", "LINK", "DOT", "NEAR", "PEPE", "FET", "RENDER", "SUI", "APT", "ATOM", "ICP", "BCH", "XLM", "FIL", "ARB", "OP", "WIF", "FLOKI", "TIA", "INJ", "RUNE", "FTM", "GALA", "SAND", "MANA", "ALGO"]
+    preset_options = [c + quote_asset for c in base_cryptos]
+    default_presets = [c + quote_asset for c in ["BTC", "ETH", "XRP", "LTC"]]
 
     if analysis_mode == "Activo Único":
-        symbol = st.text_input("Par Trading (ej. BTCUSDT, ETHUSDT, PEPEUSDT)", value="BTCUSDT", key="cfg_symbol", help="Escribe cualquier par de Binance.").strip().upper()
+        default_sym = f"BTC{quote_asset}"
+        current_sym = st.session_state.get("cfg_symbol", default_sym)
+        if not (current_sym.endswith("USDT") or current_sym.endswith("USDC")):
+            current_sym = default_sym
+        symbol = st.text_input(f"Par Trading (ej. BTC{quote_asset}, ETH{quote_asset})", value=current_sym, key="cfg_symbol", help="Escribe cualquier par de Binance.").strip().upper()
         portfolio_symbols = [symbol]
     else:
-        preset_options = [
-            "BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT",
-            "AVAXUSDT", "SHIBUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "PEPEUSDT",
-            "FETUSDT", "RENDERUSDT", "SUIUSDT", "APTUSDT", "ATOMUSDT", "ICPUSDT", "BCHUSDT",
-            "XLMUSDT", "FILUSDT", "ARBUSDT", "OPUSDT", "WIFUSDT", "FLOKIUSDT", "TIAUSDT",
-            "INJUSDT", "RUNEUSDT", "FTMUSDT", "GALAUSDT", "SANDUSDT", "MANAUSDT", "ALGOUSDT"
-        ]
+        saved_portfolio = st.session_state.get("cfg_portfolio_symbols", default_presets)
+        valid_defaults = [s for s in saved_portfolio if s in preset_options] or default_presets
         selected_preset = st.multiselect(
-            "Seleccionar Criptomonedas Destacadas",
+            f"Seleccionar Criptomonedas ({quote_asset})",
             preset_options,
-            default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT"],
+            default=valid_defaults,
             key="cfg_portfolio_symbols",
             help="Selecciona criptoactivos de la lista rápida."
         )
         custom_input = st.text_input(
-            "Añadir criptomonedas personalizadas (comas)",
-            placeholder="Ej: PNUTUSDT, BONKUSDT, RENDERUSDT",
+            f"Añadir criptomonedas personalizadas ({quote_asset})",
+            placeholder=f"Ej: PNUT{quote_asset}, BONK{quote_asset}",
             key="cfg_custom_portfolio_symbols",
-            help="Escribe cualquier criptomoneda adicional de Binance separada por comas."
+            help=f"Escribe cualquier criptomoneda adicional de Binance separada por comas."
         )
         custom_list = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
         
@@ -418,10 +439,6 @@ with st.sidebar:
             st.warning("⚠️ Selecciona o escribe al menos un par para la cartera.")
             st.stop()
         symbol = portfolio_symbols[0]
-
-    col_d1, col_d2 = st.columns(2)
-    start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
-    end_date = col_d2.date_input("Fecha Fin", value=datetime.date.today(), key="cfg_end_date")
 
     st.markdown("---")
 
@@ -784,7 +801,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(an_mode, sym, port_syms, custom_port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
+def _on_save_clicked(an_mode, q_asset, t_dir, sym, port_syms, custom_port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia/cartera antes de guardar.")
@@ -792,6 +809,8 @@ def _on_save_clicked(an_mode, sym, port_syms, custom_port_syms, intv, s_date, e_
         clean_name = name.replace(" ", "_")
         params_to_save = {
             "analysis_mode": an_mode,
+            "quote_asset": q_asset,
+            "trade_direction": t_dir,
             "symbol": sym,
             "portfolio_symbols": port_syms,
             "custom_portfolio_symbols": custom_port_syms,
@@ -883,6 +902,7 @@ if run_btn:
                     dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                     uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
                     adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                    trade_direction=trade_direction
                 )
             else:
                 results = engine.run_portfolio_backtest(
@@ -894,6 +914,7 @@ if run_btn:
                     dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                     uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
                     adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                    trade_direction=trade_direction
                 )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
@@ -903,6 +924,8 @@ if run_btn:
     st.session_state["active_results"] = results
     st.session_state["active_df_dict"] = df_dict
     st.session_state["active_analysis_mode"] = analysis_mode
+    st.session_state["active_quote_asset"] = quote_asset
+    st.session_state["active_trade_direction"] = trade_direction
     st.session_state["active_portfolio_symbols"] = portfolio_symbols
     st.session_state["active_symbol"] = symbol
     st.session_state["active_interval"] = interval
@@ -915,7 +938,7 @@ if run_btn:
     # Save run to history for benchmarking
     run_label = f"Cartera {len(portfolio_symbols)} act." if analysis_mode == "Cartera Multi-Activo" else symbol
     st.session_state["backtest_history"].append({
-        "name": f"{run_label} {interval} ({datetime.datetime.now().strftime('%H:%M:%S')})",
+        "name": f"{run_label} {interval} [{trade_direction}] ({datetime.datetime.now().strftime('%H:%M:%S')})",
         "equity_df": results['equity_df'].copy(),
         "metrics": results['metrics']
     })
@@ -928,6 +951,8 @@ if st.session_state.get("active_has_run"):
     results           = st.session_state["active_results"]
     df_dict           = st.session_state["active_df_dict"]
     analysis_mode     = st.session_state["active_analysis_mode"]
+    quote_asset       = st.session_state.get("active_quote_asset", "USDT")
+    trade_direction   = st.session_state.get("active_trade_direction", "Long & Short")
     portfolio_symbols = st.session_state["active_portfolio_symbols"]
     symbol            = st.session_state["active_symbol"]
     interval          = st.session_state["active_interval"]
@@ -942,10 +967,11 @@ if st.session_state.get("active_has_run"):
     final_equity = equity_df['equity'].iloc[-1]
 
     st.markdown('<div class="section-label">✅ DATOS CARGADOS</div>', unsafe_allow_html=True)
-    col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("Modo de Análisis", f"{analysis_mode} ({len(portfolio_symbols)} activos)")
-    col_info2.metric("Mín. Velas descargadas", min_candles)
-    col_info3.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
+    col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+    col_info1.metric("Modo & Mercado", f"{analysis_mode} ({quote_asset})")
+    col_info2.metric("Dirección Permitida", trade_direction)
+    col_info3.metric("Mín. Velas descargadas", min_candles)
+    col_info4.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
 
     # TABS
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -972,7 +998,7 @@ if st.session_state.get("active_has_run"):
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(analysis_mode, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            args=(analysis_mode, quote_asset, trade_direction, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -1097,6 +1123,8 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Parámetro | Valor |
 |-----------|-------|
 | Modo Análisis | `{analysis_mode}` |
+| Moneda Cotización | `{quote_asset}` |
+| Dirección Operaciones | `{trade_direction}` |
 | Activo(s) | `{activos_txt}` |
 | Intervalo | `{interval}` |
 | Context Length | `{context_len}` velas |
