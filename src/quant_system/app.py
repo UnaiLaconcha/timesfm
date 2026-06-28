@@ -379,7 +379,9 @@ with st.sidebar:
         key="cfg_initial_capital",
         help="Monto total en dólares a invertir en el activo único o a repartir proporcionalmente entre la cartera."
     )
-    interval = col_cap2.selectbox("Intervalo", ["1h", "4h", "1d"], key="cfg_interval")
+    
+    all_intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+    interval = col_cap2.selectbox("Intervalo", all_intervals, index=all_intervals.index("1d") if "1d" in all_intervals else 5, key="cfg_interval")
 
     if analysis_mode == "Activo Único":
         symbol = st.text_input("Par Trading (ej. BTCUSDT, ETHUSDT, PEPEUSDT)", value="BTCUSDT", key="cfg_symbol", help="Escribe cualquier par de Binance.").strip().upper()
@@ -821,20 +823,30 @@ def _on_save_clicked(an_mode, sym, port_syms, custom_port_syms, intv, s_date, e_
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN LOGIC
+# MAIN LOGIC & BACKTEST EXECUTION
 # ─────────────────────────────────────────────────────────────────────────────
 if run_btn:
-    # LOAD DATA
     df_dict = {}
     with st.spinner("📡 Descargando datos históricos de Binance..."):
         try:
-            if interval == "1h":
-                delta = datetime.timedelta(hours=int(context_len))
-            elif interval == "4h":
-                delta = datetime.timedelta(hours=int(context_len) * 4)
-            else:  # "1d"
+            if interval.endswith("m"):
+                minutes = int(interval[:-1])
+                delta = datetime.timedelta(minutes=minutes * int(context_len))
+            elif interval.endswith("h"):
+                hours = int(interval[:-1])
+                delta = datetime.timedelta(hours=hours * int(context_len))
+            elif interval.endswith("d"):
+                days = int(interval[:-1])
+                delta = datetime.timedelta(days=days * int(context_len))
+            elif interval.endswith("w"):
+                weeks = int(interval[:-1])
+                delta = datetime.timedelta(weeks=weeks * int(context_len))
+            elif interval.endswith("M"):
+                months = int(interval[:-1])
+                delta = datetime.timedelta(days=months * 30 * int(context_len))
+            else:
                 delta = datetime.timedelta(days=int(context_len))
-            
+
             fetch_start = start_date - delta
             start_str = fetch_start.strftime("%Y-%m-%d %H:%M:%S")
             end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -847,17 +859,10 @@ if run_btn:
             st.stop()
 
     min_candles = min(len(df_dict[s]) for s in portfolio_symbols)
-    st.markdown('<div class="section-label">✅ DATOS CARGADOS</div>', unsafe_allow_html=True)
-    col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("Modo de Análisis", f"{analysis_mode} ({len(portfolio_symbols)} activos)")
-    col_info2.metric("Mín. Velas descargadas", min_candles)
-    col_info3.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
-
     if min_candles < context_len + horizon_len:
         st.error(f"⚠️ Se necesitan al menos **{context_len + horizon_len}** velas. Tienes {min_candles}.")
         st.stop()
 
-    # LOAD MODEL
     with st.spinner("🧠 Cargando modelo TimesFM 2.5 (primera carga ~30s)..."):
         try:
             predictor = TimesFMPredictor(context_len=context_len, horizon_len=horizon_len)
@@ -865,7 +870,6 @@ if run_btn:
             st.error(f"Error al cargar el modelo TimesFM: {e}")
             st.stop()
 
-    # RUN BACKTEST (SINGLE OR PORTFOLIO)
     with st.spinner("⚡ Ejecutando simulación ultra-rápida (Batch Inferences)..."):
         try:
             engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
@@ -895,18 +899,53 @@ if run_btn:
             st.error(f"Error en el backtesting: {e}")
             st.stop()
 
-    equity_df    = results['equity_df']
-    trades_df    = results['trades']
-    metrics      = results['metrics']
-    final_equity = equity_df['equity'].iloc[-1]
+    # Store active results in session_state to prevent resetting on tab selectbox changes
+    st.session_state["active_results"] = results
+    st.session_state["active_df_dict"] = df_dict
+    st.session_state["active_analysis_mode"] = analysis_mode
+    st.session_state["active_portfolio_symbols"] = portfolio_symbols
+    st.session_state["active_symbol"] = symbol
+    st.session_state["active_interval"] = interval
+    st.session_state["active_min_candles"] = min_candles
+    st.session_state["active_start_date"] = start_date
+    st.session_state["active_end_date"] = end_date
+    st.session_state["active_initial_capital"] = initial_capital
+    st.session_state["active_has_run"] = True
 
     # Save run to history for benchmarking
     run_label = f"Cartera {len(portfolio_symbols)} act." if analysis_mode == "Cartera Multi-Activo" else symbol
     st.session_state["backtest_history"].append({
         "name": f"{run_label} {interval} ({datetime.datetime.now().strftime('%H:%M:%S')})",
-        "equity_df": equity_df.copy(),
-        "metrics": metrics
+        "equity_df": results['equity_df'].copy(),
+        "metrics": results['metrics']
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RENDER DASHBOARD RESULTS (PERSISTENT STATE)
+# ─────────────────────────────────────────────────────────────────────────────
+if st.session_state.get("active_has_run"):
+    results           = st.session_state["active_results"]
+    df_dict           = st.session_state["active_df_dict"]
+    analysis_mode     = st.session_state["active_analysis_mode"]
+    portfolio_symbols = st.session_state["active_portfolio_symbols"]
+    symbol            = st.session_state["active_symbol"]
+    interval          = st.session_state["active_interval"]
+    min_candles       = st.session_state["active_min_candles"]
+    start_date        = st.session_state["active_start_date"]
+    end_date          = st.session_state["active_end_date"]
+    initial_capital   = st.session_state["active_initial_capital"]
+
+    equity_df    = results['equity_df']
+    trades_df    = results['trades']
+    metrics      = results['metrics']
+    final_equity = equity_df['equity'].iloc[-1]
+
+    st.markdown('<div class="section-label">✅ DATOS CARGADOS</div>', unsafe_allow_html=True)
+    col_info1, col_info2, col_info3 = st.columns(3)
+    col_info1.metric("Modo de Análisis", f"{analysis_mode} ({len(portfolio_symbols)} activos)")
+    col_info2.metric("Mín. Velas descargadas", min_candles)
+    col_info3.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
 
     # TABS
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -924,7 +963,7 @@ if run_btn:
         save_col1, save_col2 = st.columns([3, 1])
         save_col1.text_input(
             "Nombre de la Estrategia / Cartera",
-            placeholder="Ej: CARTERA_TopCrypto_FullQuant",
+            placeholder="Ej: Wallet_BTC_ETH_XRP_LTC_Clasica",
             label_visibility="collapsed",
             key="strategy_name_input_key"
         )
@@ -951,7 +990,7 @@ if run_btn:
     with tab2:
         if analysis_mode == "Cartera Multi-Activo":
             col_adv_sym, _ = st.columns([2, 2])
-            selected_adv_sym = col_adv_sym.selectbox("🔍 Seleccionar Activo de la Cartera para inspeccionar", portfolio_symbols)
+            selected_adv_sym = col_adv_sym.selectbox("🔍 Seleccionar Activo de la Cartera para inspeccionar", portfolio_symbols, key="adv_tab_selected_symbol")
             adv_df = df_dict[selected_adv_sym]
             adv_trades = results['asset_results'][selected_adv_sym]['trades']
             adv_equity = results['asset_results'][selected_adv_sym]['equity_df']
