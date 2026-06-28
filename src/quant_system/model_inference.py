@@ -33,3 +33,16 @@ class TimesFMPredictor:
             inputs=[input_array]
         )
         return point_forecast[0], quantile_forecast[0]
+
+    def predict_batch(self, inputs_list: list):
+        """
+        Input should be a list of 1D numpy arrays.
+        Returns point_forecasts (batch, horizon) and quantile_forecasts (batch, horizon, quantiles).
+        """
+        if not inputs_list:
+            return np.array([]), np.array([])
+        point_forecasts, quantile_forecasts = self.model.forecast(
+            horizon=self.horizon_len,
+            inputs=inputs_list
+        )
+        return point_forecasts, quantile_forecasts

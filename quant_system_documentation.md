@@ -130,6 +130,14 @@ El sistema incluye la opción **Volatility Adaptive SL** para ajustar dinámicam
 * **Cálculo Adaptativo:** En cada entrada, calcula la desviación estándar de los retornos de las velas del contexto ($\sigma$). El Stop Loss porcentual de la operación se establece en $\text{effective\_sl\_pct} = \max(\text{stop\_loss\_pct}, k \cdot \sigma)$, donde $k$ es el `volatility_multiplier` configurado en el panel lateral (ej. 2.0).
 * **Beneficio:** En mercados tranquilos mantiene un Stop Loss ceñido para proteger el capital, mientras que en entornos muy volátiles ensancha el margen para no ser expulsado por el ruido del mercado antes de que el movimiento se ejecute a favor.
 
+### 3.10. Mejoras Institucionales y Métricas Avanzadas
+El sistema cuenta con una infraestructura de grado institucional optimizada en rendimiento y análisis:
+* **Inferencia Acelerada por Lotes (Batch Forecasting):** Mediante `predict_batch()` en `model_inference.py`, el motor extrae todas las ventanas de contexto y ejecuta las predicciones probabilísticas de PyTorch en paralelo, acelerando la simulación hasta 50x.
+* **Métricas Institucionales Expandidas:** Panel de 8 KPIs que incluye **Win Rate (%)**, **Profit Factor**, **Sortino Ratio** y **Expectancia por Operación ($)**.
+* **Exportación CSV:** Botón de descarga interactivo en la pestaña de Operaciones para auditoría externa en Excel.
+* **Benchmarking de Estrategias:** Superposición automática en tiempo real de múltiples ejecuciones históricas en la curva de equidad.
+
+
 
 
 

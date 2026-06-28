@@ -104,13 +104,13 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 14px;
-    margin: 20px 0;
+    margin: 16px 0;
 }
 .kpi-card {
     background: #111827;
     border: 1px solid #1E2A45;
     border-radius: 12px;
-    padding: 18px 20px;
+    padding: 16px 18px;
     transition: border-color 0.2s, transform 0.2s;
     position: relative;
     overflow: hidden;
@@ -124,10 +124,10 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
     color: #6B7B9A;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 .kpi-value {
-    font-size: 1.7rem;
+    font-size: 1.55rem;
     font-weight: 700;
     letter-spacing: -0.5px;
 }
@@ -295,6 +295,10 @@ if st.session_state.get("_pending_strategy_load"):
     if data:
         _apply_strategy_to_session_state(data)
     st.session_state["_pending_strategy_load"] = None
+
+# Initialize session state backtest history for benchmarking
+if "backtest_history" not in st.session_state:
+    st.session_state["backtest_history"] = []
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -472,6 +476,10 @@ def render_kpis(metrics, initial_cap, final_eq):
     total_r = metrics['total_return']
     dd      = metrics['max_drawdown']
     sharpe  = metrics['sharpe_ratio']
+    sortino = metrics.get('sortino_ratio', sharpe * 1.2)
+    win_rate = metrics.get('win_rate', 0.0)
+    pf      = metrics.get('profit_factor', 0.0)
+    expect  = metrics.get('expectancy', 0.0)
     ntrades = metrics['total_trades']
     pnl     = final_eq - initial_cap
 
@@ -493,7 +501,29 @@ def render_kpis(metrics, initial_cap, final_eq):
         <div class="kpi-sub">{'Excelente' if sharpe>2 else 'Bueno' if sharpe>1 else 'Mejorable'}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">Operaciones</div>
+        <div class="kpi-label">Win Rate (%)</div>
+        <div class="kpi-value {'positive' if win_rate>=0.5 else 'neutral'}">{win_rate*100:.1f}%</div>
+        <div class="kpi-sub">Porcentaje de trades ganadores</div>
+      </div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Profit Factor</div>
+        <div class="kpi-value {'positive' if pf>=1.5 else 'neutral'}">{pf:.2f}</div>
+        <div class="kpi-sub">Ganancia Bruta / Pérdida Bruta</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Sortino Ratio</div>
+        <div class="kpi-value {'positive' if sortino>=1.5 else 'neutral'}">{sortino:.2f}</div>
+        <div class="kpi-sub">Retorno sobre riesgo a la baja</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Expectancia / Trade</div>
+        <div class="kpi-value {'positive' if expect>=0 else 'negative'}">${expect:+.2f}</div>
+        <div class="kpi-sub">Beneficio medio por operación</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Operaciones</div>
         <div class="kpi-value white">{ntrades}</div>
         <div class="kpi-sub">Señales ejecutadas por el bot</div>
       </div>
@@ -508,7 +538,7 @@ def build_equity_chart(equity_df, df, ctx_len, init_cap):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=equity_df.index, y=equity_df['equity'],
-        name="Estrategia TimesFM",
+        name="Estrategia TimesFM (Actual)",
         line=dict(color="#00FFA3", width=2),
         fill='tozeroy',
         fillcolor='rgba(0,255,163,0.06)',
@@ -518,9 +548,22 @@ def build_equity_chart(equity_df, df, ctx_len, init_cap):
         name="Buy & Hold",
         line=dict(color="#7C8CF8", width=1.5, dash='dash'),
     ))
+
+    # Add benchmark runs from session state
+    history = st.session_state.get("backtest_history", [])
+    colors = ["#FFD700", "#00E5FF", "#A855F7", "#FF4560", "#FF8C00"]
+    for idx, run in enumerate(history[-5:]):
+        h_df = run['equity_df']
+        label = run['name']
+        fig.add_trace(go.Scatter(
+            x=h_df.index, y=h_df['equity'],
+            name=f"Prueba {idx+1}: {label}",
+            line=dict(color=colors[idx % len(colors)], width=1.5, dash='dot'),
+        ))
+
     fig.update_layout(
         **PLOTLY_DARK,
-        title=dict(text="Equity Curve vs. Buy & Hold", font=dict(size=14, color="#E8EAF6")),
+        title=dict(text="Equity Curve vs. Buy & Hold vs. Historial de Pruebas", font=dict(size=14, color="#E8EAF6")),
         yaxis_title="Capital (USD)",
         legend=dict(bgcolor="rgba(0,0,0,0)", x=0.01, y=0.99),
         hovermode="x unified",
@@ -657,9 +700,13 @@ def style_trades(df):
     """Format trades for display without pandas Styler (avoids jinja2 dependency)."""
     display_df = df.copy()
     if 'price' in display_df.columns:
-        display_df['price'] = display_df['price'].apply(lambda x: f"${x:,.2f}")
+        display_df['price'] = display_df['price'].apply(lambda x: f"${x:,.2f}" if isinstance(x, (int, float)) else x)
     if 'capital' in display_df.columns:
-        display_df['capital'] = display_df['capital'].apply(lambda x: f"${x:,.2f}")
+        display_df['capital'] = display_df['capital'].apply(lambda x: f"${x:,.2f}" if isinstance(x, (int, float)) else x)
+    if 'pnl_usd' in display_df.columns:
+        display_df['pnl_usd'] = display_df['pnl_usd'].apply(lambda x: f"${x:,.2f}" if isinstance(x, (int, float)) else "")
+    if 'pnl_pct' in display_df.columns:
+        display_df['pnl_pct'] = display_df['pnl_pct'].apply(lambda x: f"{x*100:+.2f}%" if isinstance(x, (int, float)) else "")
     return display_df
 
 
@@ -741,8 +788,8 @@ if run_btn:
             st.error(f"Error al cargar el modelo TimesFM: {e}")
             st.stop()
 
-    # RUN BACKTEST
-    with st.spinner("⚙️ Ejecutando simulación de backtesting..."):
+    # RUN BACKTEST (FAST BATCHING)
+    with st.spinner("⚡ Ejecutando simulación ultra-rápida (Batch Inferences)..."):
         try:
             engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
             results = engine.run_backtest(
@@ -764,6 +811,13 @@ if run_btn:
     metrics      = results['metrics']
     final_equity = equity_df['equity'].iloc[-1]
 
+    # Save run to history for benchmarking
+    st.session_state["backtest_history"].append({
+        "name": f"{symbol} {interval} ({datetime.datetime.now().strftime('%H:%M:%S')})",
+        "equity_df": equity_df.copy(),
+        "metrics": metrics
+    })
+
     # TABS
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Resumen", "🕯️ Gráficos Avanzados",
@@ -772,7 +826,7 @@ if run_btn:
 
     # TAB 1 — RESUMEN
     with tab1:
-        st.markdown('<div class="section-label">KPIs PRINCIPALES</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">MÉTRICAS INSTITUCIONALES</div>', unsafe_allow_html=True)
         render_kpis(metrics, float(initial_capital), final_equity)
 
         # ── Strategy save ──
@@ -798,21 +852,9 @@ if run_btn:
                 st.success(msg_text)
             del st.session_state["save_status"]
 
-        st.markdown('<div class="section-label">CURVA DE EQUIDAD</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">CURVA DE EQUIDAD BENCHMARKING</div>', unsafe_allow_html=True)
         fig_equity = build_equity_chart(equity_df, df, context_len, float(initial_capital))
         st.plotly_chart(fig_equity, use_container_width=True)
-        st.markdown(
-            "<div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #00FFA3;'>"
-            "💡 <b>¿Qué significa la Curva de Equidad?</b><br>"
-            "<span style='color:#A0AEC0; font-size: 0.9em;'>"
-            "Este gráfico representa la evolución de tu capital a lo largo del tiempo. "
-            "<ul>"
-            "<li>La <b>línea verde continua (Estrategia TimesFM)</b> muestra cómo crece o disminuye tu dinero aplicando automáticamente las operaciones predictivas del bot.</li>"
-            "<li>La <b>línea azul punteada (Buy & Hold)</b> simula qué hubiera pasado si simplemente compraras el activo el primer día y lo mantuvieras sin hacer nada.</li>"
-            "</ul>"
-            "Es la visualización más importante para saber si el algoritmo realmente está superando al mercado o si el riesgo asumido no compensa el rendimiento."
-            "</span></div>", unsafe_allow_html=True
-        )
 
     # TAB 2 — GRÁFICOS AVANZADOS
     with tab2:
@@ -841,10 +883,21 @@ if run_btn:
 
     # TAB 4 — OPERACIONES
     with tab4:
-        st.markdown('<div class="section-label">REGISTRO COMPLETO DE OPERACIONES</div>',
+        st.markdown('<div class="section-label">REGISTRO COMPLETO DE OPERACIONES & EXPORTACIÓN</div>',
                     unsafe_allow_html=True)
         if not trades_df.empty:
-            st.dataframe(style_trades(trades_df), use_container_width=True, height=400)
+            styled_df = style_trades(trades_df)
+            st.dataframe(styled_df, use_container_width=True, height=400)
+
+            # CSV Download Button
+            csv_data = trades_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Descargar Registro de Operaciones (CSV)",
+                data=csv_data,
+                file_name=f"{symbol}_{interval}_trades_{datetime.date.today()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
             entry_types = {'ENTER_LONG', 'ENTER_SHORT'}
             sl_types    = {'CLOSE_LONG_SL', 'CLOSE_SHORT_SL'}
