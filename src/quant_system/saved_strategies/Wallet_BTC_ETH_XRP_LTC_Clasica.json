@@ -29,5 +29,7 @@
   "uncertainty_filter": false,
   "max_uncertainty_pct": 5.0,
   "adaptive_sl": false,
-  "volatility_multiplier": 2.0
+  "volatility_multiplier": 2.0,
+  "quote_asset": "USDT",
+  "trade_direction": "Long & Short"
 }

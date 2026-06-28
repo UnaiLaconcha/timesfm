@@ -11,5 +11,8 @@
   "threshold_pct": 1.0,
   "initial_capital": 1000,
   "overlapping": false,
-  "max_positions": 1
+  "max_positions": 1,
+  "analysis_mode": "Activo Único",
+  "quote_asset": "USDT",
+  "trade_direction": "Long & Short"
 }

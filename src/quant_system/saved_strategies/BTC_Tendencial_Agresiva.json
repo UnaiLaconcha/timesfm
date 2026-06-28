@@ -21,5 +21,8 @@
   "uncertainty_filter": false,
   "max_uncertainty_pct": 5.0,
   "adaptive_sl": true,
-  "volatility_multiplier": 2.5
+  "volatility_multiplier": 2.5,
+  "analysis_mode": "Activo Único",
+  "quote_asset": "USDT",
+  "trade_direction": "Long & Short"
 }
