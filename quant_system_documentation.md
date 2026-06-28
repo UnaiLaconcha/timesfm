@@ -1,190 +1,335 @@
-# Documentación del Sistema Cuantitativo: TimesFM + Binance
+# Documentación Exhaustiva y Manual Técnico del Sistema Cuantitativo: TimesFM + Binance
 
-Esta documentación explica la arquitectura, lógica y comandos de ejecución del sistema de backtesting implementado. Está redactada para que cualquier desarrollador o **futuro modelo de IA** comprenda rápidamente el estado actual del código y sepa cómo iterar sobre él.
+Este documento constituye la especificación técnica completa, la formulación matemática rigurosa y el manual operativo del sistema cuantitativo de backtesting basado en **Google TimesFM 2.5** e integrado con **Binance**. 
 
----
-
-## 1. Arquitectura del Proyecto
-
-El sistema se ha diseñado de forma modular dentro del directorio `src/quant_system/`.
-
-* **`data_loader.py`**: 
-  * Descarga datos históricos de velas (Klines) de la API pública de Binance usando `python-binance`.
-  * **No requiere API keys.**
-  * Devuelve un `pandas.DataFrame` estructurado con columnas estándar (`open`, `high`, `low`, `close`, `volume`) e índice temporal.
-* **`model_inference.py`**: 
-  * Encapsula el modelo fundacional de Google: `TimesFM 2.5`.
-  * Define la clase `TimesFMPredictor`, inicializando los hiperparámetros obligatorios (`context_len` y `horizon_len`).
-  * Utiliza `torch` con alta precisión en la multiplicación de matrices.
-* **`backtester.py`**:
-  * Contiene la clase `BacktestEngine`, el motor del sistema.
-  * Implementa un *Walk-Forward Backtest* (simulación paso a paso a través del tiempo).
-  * Por razones de rendimiento, avanza en bloques (ej. `step_size = 6`) en lugar de vela por vela para no saturar las inferencias del modelo.
-  * **Lógica implementada:** Long/Short, Stop-Loss fijo y deducción de *Taker Fees* de Binance (`0.04%`).
-* **`app.py`**:
-  * Interfaz de usuario construida con `Streamlit`.
-  * Une los 3 módulos anteriores. Contiene los controles de configuración, invoca las descargas/predicciones y visualiza la curva de capital (`Equity Curve`) utilizando `Plotly`.
+Está diseñado para proporcionar a cualquier desarrollador, analista cuantitativo o **modelo de Inteligencia Artificial** una comprensión absoluta y detallada de la arquitectura de código, la fundamentación matemática de cada indicador y estrategia, el funcionamiento de los hiperparámetros y la ejecución del sistema.
 
 ---
 
-## 2. Comandos de Ejecución y Configuración
+## 1. Arquitectura del Sistema y Módulos de Código
 
-Para levantar el sistema desde cero (o si cambias de máquina), debes ejecutar los siguientes comandos en tu terminal.
+El sistema está construido de forma modular bajo el directorio `src/quant_system/`. Cada componente tiene una responsabilidad claramente delimitada dentro de la canalización (*pipeline*) cuantitativa:
 
-### 2.1. Entorno y Dependencias
+```
+src/quant_system/
+├── data_loader.py       ← Módulo de adquisición y formateo de datos históricos (Binance API)
+├── model_inference.py   ← Módulo de inferencia del modelo fundacional Google TimesFM 2.5
+├── backtester.py        ← Motor institucional de simulación Walk-Forward y gestión de riesgo
+├── app.py               ← Interfaz web interactiva (Streamlit), gráficos Plotly y gestión de estado
+└── saved_strategies/    ← Repositorio de configuraciones y carteras serializadas en JSON
+```
 
-El proyecto ya tiene su entorno virtual en `.venv/` **creado y gestionado por `uv`** (ver `pyvenv.cfg`). Las dependencias del sistema cuantitativo están declaradas como extras en `pyproject.toml` bajo `[project.optional-dependencies]` con el nombre `quant`.
+### 1.1. Módulo de Datos (`data_loader.py`)
+* **Clase Principal**: `BinanceLoader`
+* **Funcionalidad**: Interactúa con los puntos de enlace públicos de la API de Binance (mediante `python-binance`) sin requerir llaves API (autenticación pública).
+* **Marcos Temporales Soportados**: Admite los 15 intervalos estándar de Binance:
+  $$\text{Intervalos} \in \{1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M\}$$
+* **Alineación Histórica de Contexto**: Para evitar sesgos de inicio en las predicciones, el método `fetch_historical_data` calcula dinámicamente un margen de retroceso temporal (*lookback timedelta*) en función del parámetro `context_len`. De este modo, al alcanzar la fecha exacta de inicio del backtest (`start_date`), el modelo ya dispone de la ventana completa de contexto requerida para inferir de forma inmediata.
+* **Estructura de Salida**: Devuelve un `pandas.DataFrame` indexado por marca temporal UTC con columnas normalizadas: `['open', 'high', 'low', 'close', 'volume']`.
 
-**Para instalar todas las dependencias del sistema cuantitativo con `uv`:**
+### 1.2. Módulo de Inferencia (`model_inference.py`)
+* **Clase Principal**: `TimesFMPredictor`
+* **Arquitectura del Modelo**: Encapsula el modelo fundacional univariante de series temporales de Google **TimesFM 2.5** (200 millones de parámetros, checkpoint PyTorch `google/timesfm-2.5-200m-pytorch`).
+* **Inferencia Probabilística por Cuantiles**: Configurado con la cabeza de cuantiles continuos (`use_continuous_quantile_head=True`), el modelo genera en cada paso tanto el pronóstico puntual (mediana $q_{50}$) como una distribución probabilística de 10 cuantiles ($q_{10}, q_{20}, \dots, q_{90}$).
+* **Aceleración por Lotes (`predict_batch`)**: Recibe una lista de matrices unidimensionales de contexto de tamaño $[B, N_{context}]$ (donde $B$ es el tamaño del lote) y devuelve matrices de pronóstico punto $[B, N_{horizon}]$ y cuantiles $[B, N_{horizon}, 10]$, optimizando de forma masiva el uso de la CPU/GPU.
+
+### 1.3. Motor de Backtesting y Riesgo (`backtester.py`)
+* **Clase Principal**: `BacktestEngine`
+* **Modos de Inversión**: Soporta tanto la evaluación sobre un **Activo Único** (`run_backtest`) como la gestión de una **Cartera Multi-Activo** (`run_portfolio_backtest`).
+* **Simulación Walk-Forward**: Itera cronológicamente sobre el historial. Para garantizar alta eficiencia computacional sin perder precisión, permite ajustar el paso de evaluación (`step_size`).
+* **Inferencia en Mini-Lotes**: Procesa las ventanas de contexto en bloques de 64 muestras (`batch_size = 64`), reduciendo el tiempo de cálculo hasta en un 95%.
+* **Estructura de Comisiones**: Resta en cada operación de entrada y salida una comisión tipo *Taker Fee* de Binance configurada por defecto en $0.04\%$ ($0.0004$).
+* **Sistema de Callbacks**: Incorpora el argumento `progress_callback` para notificar el porcentaje de avance y el estado de la simulación en tiempo real a la interfaz de usuario.
+
+### 1.4. Capa de Presentación e Interfaz (`app.py`)
+* **Framework**: `Streamlit` combinado con `Plotly Graph Objects` para renderizado interactivo de gráficos financieros.
+* **Persistencia de Estado**: Implementa una gestión estricta con `st.session_state` para almacenar los resultados del último backtest activo. Esto evita que los gráficos se reinicien al interactuar con selectores secundarios o cambiar entre pestañas del dashboard.
+* **Diseño e Iconografía Multiplataforma**: Utiliza CSS personalizado con una pila de fuentes en cascada que incluye fallbacks explícitos (`Noto Color Emoji`, `Apple Color Emoji`, `Segoe UI Emoji`). Para prevenir fallos de renderizado (glifos vacíos `[x]`) en sistemas operativos Linux o servidores sin fuentes de color instaladas, la interfaz emplea texto limpio, símbolos universales y etiquetas CSS pulidas.
+
+---
+
+## 2. Guía de Instalación, Entorno y Ejecución
+
+### 2.1. Gestión del Entorno Virtual con `uv`
+El proyecto utiliza un entorno virtual localizado en `.venv/` gestionado mediante el paquete de alto rendimiento `uv`. Todas las dependencias cuantitativas están definidas como un grupo opcional en `pyproject.toml`.
+
+**Instalación paso a paso desde la terminal:**
 
 ```bash
-# Instalar el extra [quant] (incluye timesfm, torch, streamlit, plotly, pandas, python-binance)
+# 1. Clonar o posicionarse en el directorio del proyecto
+cd /ruta/al/proyecto/times-fm
+
+# 2. Instalar el paquete en modo editable junto con las dependencias del grupo [quant]
 uv pip install -e ".[quant]" --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
-> **¿Por qué `uv pip install` y no `pip install`?**
-> `uv` respeta el entorno `.venv` del proyecto y es 10–100x más rápido que pip.
-> Jamás usar `pip install` a nivel de sistema. Todo va dentro del `.venv` del proyecto.
+> **Regla de Entorno:** Se debe utilizar siempre `uv pip` o `uv run` para garantizar que los paquetes se instalen e interpreten exclusivamente dentro del entorno `.venv/` aislado del proyecto.
 
-### 2.2. Ejecutar el Dashboard
-
-Para lanzar la interfaz visual interactiva, el servidor de Streamlit debe ejecutarse **con el entorno virtual activado**:
+### 2.2. Comando de Lanzamiento del Dashboard
+Para iniciar la aplicación web en modo de desarrollo o producción:
 
 ```bash
-# Opción 1: Con uv run (recomendado - no necesita activar el venv manualmente)
 uv run streamlit run src/quant_system/app.py
-
-# Opción 2: Activando el venv manualmente
-source .venv/bin/activate
-streamlit run src/quant_system/app.py
 ```
 
-> El dashboard estará disponible en: `http://localhost:8501`
+El servidor local se desplegará por defecto en el puerto 8501: `http://localhost:8501`.
 
 ---
 
-## 3. Lógica Interna de Inversión (Detallada)
+## 3. Especificación Matemática Rigurosa y Lógica de Inversión
 
-El sistema de backtesting simula la ejecución paso a paso (Walk-Forward) a lo largo del historial de precios descargado de Binance. Aquí se explica la lógica y el papel de cada parámetro:
+El motor de backtesting evalúa las condiciones del mercado en cada paso $t$ del bucle Walk-Forward. A continuación se detallan las ecuaciones y algoritmos exactos que rigen el comportamiento del sistema.
 
-### 3.1. Papel de los Parámetros del Panel Lateral
-* **`Fecha Inicio` / `Fecha Fin`**: Rango de tiempo para el cual se desea evaluar y ejecutar la estrategia de inversión. Por defecto, inicia el 1 de enero de 2026 y termina en la fecha actual (o la que se configure).
-  * *Nota de alineación:* El cargador de datos calcula de manera automática una ventana adicional de retroceso (`timedelta` correspondiente a `context_len` velas hacia atrás de la fecha de inicio). De esta forma, el primer día de simulación de inversión (el 1 de enero de 2026 por defecto) el modelo ya cuenta con el historial completo de contexto requerido y comienza a predecir de forma inmediata.
-* **`Context Length` (`context_len`)**: La cantidad de velas del pasado inmediato que el modelo de TimesFM utiliza como entrada. Para pronósticos robustos, se recomiendan ventanas amplias (ej. 512 velas).
-* **`Horizon Length` (`horizon_len`)**: El número exacto de velas hacia el futuro que predice el modelo. Por ejemplo, con un valor de 24 en velas de 4h, el modelo proyecta el precio a 96 horas vista. La decisión de inversión evalúa el movimiento esperado en el último punto de esta predicción (`horizon_len - 1`).
-* **`Paso de Evaluación` (`step_size`)**: Frecuencia con la que el backtester avanza el bucle y ejecuta una inferencia. Si se configura en `1`, se evalúa la señal en cada una de las velas históricas (ej. cada 1 hora). Si se configura en `6`, el bucle avanza de 6 en 6 velas (evaluando cada 6 horas), lo que reduce considerablemente el tiempo del cálculo a cambio de menor resolución.
-* **`Umbral de Entrada (%)` (`threshold_pct`)**: Movimiento porcentual mínimo esperado para abrir una posición. Si el modelo proyecta que el precio subirá más del umbral, se abre un **Long** (comprado). Si proyecta que caerá más allá del umbral negativo, se abre un **Short** (vendido).
-* **`Stop Loss (%)` (`stop_loss_pct`)**: Límite máximo de pérdidas. Si el precio se mueve en contra de la posición por este porcentaje o más desde el punto de entrada, la operación se cierra inmediatamente.
-* **`Take Profit (%)` (`take_profit_pct`)**: Objetivo de ganancias. Si el precio se mueve a favor de la posición por este porcentaje o más desde el punto de entrada, la posición se liquida para asegurar las ganancias. Si se configura en `0%`, queda deshabilitado.
+### 3.1. Señal de Predicción y Movimiento Esperado
+En cualquier instante de evaluación $t$, disponiendo de una ventana de contexto de precios de cierre $\{P_{t-N_{ctx}+1}, \dots, P_t\}$, el modelo TimesFM predice una serie futura sobre el horizonte $h \in \{1, \dots, N_{hor}\}$, denotada como $\hat{P}_{t+h}$.
 
-### 3.2. Ciclo de Vida de una Operación (Modo Secuencial)
-1. **Evaluación de Señales:** En cada paso del bucle (definido por `step_size`):
-   * Se extraen las últimas `context_len` velas hasta el índice actual.
-   * Se invoca el modelo `TimesFM` para generar la predicción sobre las próximas `horizon_len` velas.
-   * Se calcula el movimiento porcentual esperado: `expected_move = (Precio_Predicho_Fin_Horizonte - Precio_Actual) / Precio_Actual`.
-2. **Entrada al Mercado (Si no hay posición activa):**
-   * Si `expected_move > threshold_pct` → Se abre **Long** al precio actual.
-   * Si `expected_move < -threshold_pct` → Se abre **Short** al precio actual.
-   * Cada apertura descuenta un `0.04%` de comisión de Binance.
-3. **Monitoreo y Salida del Mercado (Si hay posición activa):**
-   * Mientras la posición esté abierta, **el modelo no vuelve a realizar predicciones**. El bucle simplemente avanza y monitorea el precio.
-   * **Stop-Loss (SL):** Si el precio cruza el umbral de pérdidas máximo establecido (`stop_loss_pct`), la operación se cierra inmediatamente.
-   * **Take Profit (TP):** Si el precio alcanza el objetivo de ganancias establecido (`take_profit_pct`), la operación se liquida para asegurar las ganancias.
-   * **Cierre por Fin de Historial:** Si la simulación termina y aún hay una posición abierta, se fuerza el cierre en la última vela disponible.
-   * Al cerrar, se calcula el capital resultante final y se descuenta la comisión de salida (`0.04%`).
+El **Movimiento Porcentual Esperado** ($\Delta_{exp}$) se calcula considerando el último valor del horizonte proyectado ($h = N_{hor}$):
 
-### 3.3. Modo de Operaciones Simultáneas (Overlapping Trades)
-Cuando el checkbox **"Operaciones Simultáneas"** está activado en el dashboard (`overlapping=True`), el motor permite mantener hasta `max_positions` operaciones abiertas simultáneamente (configurable de 2 a 10).
-* **Modelo de Asignación de Capital:** Para evitar inflar o distorsionar los resultados, el sistema utiliza un pool de capital no invertido (`available_capital`). Cuando el modelo genera una nueva señal y hay slots disponibles (`len(active_positions) < max_positions`), a la nueva posición se le asigna una porción equitativa del capital disponible (`available_capital / slots_restantes`).
-* **Monitoreo Independiente:** En cada paso temporal, el sistema comprueba individualmente los niveles de Stop-Loss y Take-Profit de **todas** las posiciones activas. Cada posición se liquida de forma independiente cuando alcanza sus objetivos.
-* **Composición de Equidad:** La curva de equidad en cada paso se calcula sumando el capital no invertido más la valoración mark-to-market actual de todas las operaciones abiertas.
+$$\Delta_{exp} = \frac{\hat{P}_{t+N_{hor}} - P_t}{P_t}$$
 
-### 3.4. Guardado y Carga de Estrategias (Config Management)
-El sistema incluye un gestor de configuraciones en formato JSON guardados en la carpeta `src/quant_system/saved_strategies/`.
-* **Guardar Estrategia:** En la pestaña "📊 Resumen", el usuario puede escribir un nombre y pulsar "💾 Guardar". Esto serializa todos los hiperparámetros actuales (activo, intervalo, fechas, context, horizon, step size, riesgo y modo de ejecución) en un archivo `.json`.
-* **Cargar Estrategia:** En la parte superior del panel lateral izquierdo, el desplegable "Cargar Estrategia Guardada" muestra todos los archivos guardados. Al seleccionar uno, el sistema inyecta los parámetros en `st.session_state` y fuerza un refresco visual (`st.rerun()`), actualizando instantáneamente todos los sliders e inputs del dashboard.
+Sea $\theta = \text{threshold\_pct}$ el umbral porcentual mínimo exigido (ej. $1.0\% = 0.01$). La generación de señales según el parámetro de dirección de operaciones (`trade_direction`) se rige por:
 
-### 3.5. Modo Trailing Stop Loss (Stop Loss Dinámico)
-Como alternativa al Take Profit fijo, el sistema incluye la opción de **Trailing Stop Loss (Dinámico)** para maximizar las ganancias durante tendencias prolongadas a favor de la posición.
-* **Lógica en Posición Long:** El sistema registra de manera continua el precio máximo alcanzado (`peak_price`) desde la apertura. El nivel de Stop Loss se actualiza dinámicamente según la fórmula: `dynamic_sl = max(entry_price * (1 - stop_loss_pct), peak_price * (1 - trailing_sl_pct))`. Si el precio se da la vuelta y cruza este umbral dinámico, la posición se liquida registrándose con el tipo `CLOSE_LONG_TSL`.
-* **Lógica en Posición Short:** El sistema registra de manera continua el precio mínimo alcanzado (`lowest_price`). El nivel de Stop Loss dinámico se actualiza a: `dynamic_sl = min(entry_price * (1 + stop_loss_pct), lowest_price * (1 + trailing_sl_pct))`. Si el precio repunta y toca el nivel dinámico, la posición se liquida con el tipo `CLOSE_SHORT_TSL`.
-* **Integración:** Funciona tanto en ejecuciones de posición única como en operaciones simultáneas (donde cada posición rastrea su propio Trailing SL independiente).
+* **Modo "Long & Short"**:
+  $$\text{Señal}_t = \begin{cases} \text{LONG}, & \text{si } \Delta_{exp} > \theta \\ \text{SHORT}, & \text{si } \Delta_{exp} < -\theta \\ \text{NEUTRAL}, & \text{en otro caso} \end{cases}$$
 
-### 3.6. Modo Break-Even Stop Loss (Protección a Entrada)
-El sistema permite activar la función **Break-Even**, la cual protege la cuenta trasladando el Stop Loss al precio exacto de entrada en cuanto la operación alcanza un beneficio porcentual determinado (`break_even_trigger_pct`).
-* **Activación y Ejecución:** En cada vela, si una posición alcanza el porcentaje de ganancia especificado (ej. +1.5%), el Stop Loss de esa operación se actualiza automáticamente a `entry_price`. Si el mercado se da la vuelta y retrocede, la operación se liquida en el punto de entrada registrándose con el tipo `CLOSE_LONG_BE` o `CLOSE_SHORT_BE`, garantizando que la operación termine con cero pérdidas netas.
-* **Combinabilidad:** Puede utilizarse de forma independiente con Take Profit Fijo o combinarse dinámicamente con Trailing Stop Loss.
+* **Modo "Solo Long"**:
+  $$\text{Señal}_t = \begin{cases} \text{LONG}, & \text{si } \Delta_{exp} > \theta \\ \text{NEUTRAL}, & \text{en otro caso} \end{cases}$$
 
-### 3.7. Dimensionamiento Dinámico por Confianza (Quantile Sizing)
-El sistema incluye la función **Dynamic Confidence Sizing**, la cual ajusta dinámicamente el tamaño del capital de cada posición basándose en los cuantiles probabilísticos de TimesFM 2.5 ($q_{10}$ a $q_{90}$).
-* **Evaluación Cuantitativa:** Al evaluar una entrada en Long, se analiza el cuantil pesimista $q_{10}$. Si $q_{10} > \text{precio\_actual}$ (incluso en el escenario pesimista el modelo predice beneficio), se clasifica como una operación de `Alta Confianza` y se multiplica el capital asignado por el factor `confidence_multiplier` (ej. 1.5x o 2.0x). En Short, se evalúa si $q_{90} < \text{precio\_actual}$.
-* **Registro:** Las operaciones ejecutadas bajo esta condición se registran con la etiqueta de confianza `High` en el libro de órdenes.
-
-### 3.8. Modo Filtro de Incertidumbre (Uncertainty Filter)
-El sistema integra el **Uncertainty Filter** para descartar señales de trading en periodos de volatilidad o ruido de mercado excesivo.
-* **Métrica de Incertidumbre:** Calcula la dispersión relativa de los cuantiles al final del horizonte: $\text{uncertainty\_spread} = (q_{90} - q_{10}) / \text{precio\_actual}$.
-* **Filtrado:** Si la dispersión supera el umbral máximo tolerado `max_uncertainty_pct` (ej. 5.0%), el sistema descarta la señal de entrada y no abre la posición, protegiendo la cuenta contra falsas rupturas. El número de entradas filtradas se contabiliza en la pestaña Operaciones.
-
-### 3.9. Modo Stop Loss Adaptativo por Volatilidad (Volatility Adaptive SL)
-El sistema incluye la opción **Volatility Adaptive SL** para ajustar dinámicamente el nivel de Stop Loss en función de la agitación del mercado.
-* **Cálculo Adaptativo:** En cada entrada, calcula la desviación estándar de los retornos de las velas del contexto ($\sigma$). El Stop Loss porcentual de la operación se establece en $\text{effective\_sl\_pct} = \max(\text{stop\_loss\_pct}, k \cdot \sigma)$, donde $k$ es el `volatility_multiplier` configurado en el panel lateral (ej. 2.0).
-* **Beneficio:** En mercados tranquilos mantiene un Stop Loss ceñido para proteger el capital, mientras que en entornos muy volátiles ensancha el margen para no ser expulsado por el ruido del mercado antes de que el movimiento se ejecute a favor.
-
-### 3.10. Mejoras Institucionales y Métricas Avanzadas
-El sistema cuenta con una infraestructura de grado institucional optimizada en rendimiento y análisis:
-* **Inferencia Acelerada por Lotes (Batch Forecasting):** Mediante `predict_batch()` en `model_inference.py`, el motor extrae todas las ventanas de contexto y ejecuta las predicciones probabilísticas de PyTorch en paralelo, acelerando la simulación hasta 50x.
-* **Métricas Institucionales Expandidas:** Panel de 8 KPIs que incluye **Win Rate (%)**, **Profit Factor**, **Sortino Ratio** y **Expectancia por Operación ($)**.
-* **Exportación CSV:** Botón de descarga interactivo en la pestaña de Operaciones para auditoría externa en Excel.
-* **Benchmarking de Estrategias:** Superposición automática en tiempo real de múltiples ejecuciones históricas en la curva de equidad.
-
-### 3.11. Modo Cartera de Inversión Multi-Activo (Portfolio Engine)
-El sistema permite gestionar y evaluar el comportamiento de una **Cartera de Inversión Multi-Activo**:
-* **Reparto Proporcional de Capital:** El usuario define un capital global (ej. $1000 USD), el cual el motor reparte de forma equitativa entre los $N$ criptoactivos seleccionados en el panel lateral ($Capital_i = Capital / N$).
-* **Ejecución Homogénea:** Aplica la misma estrategia predictiva y reglas de riesgo a todos los activos de la cartera durante el mismo periodo temporal.
-* **Consolidación de Métricas:** Genera una curva de equidad global combinada y calcula el Sharpe, Sortino, Drawdown y Win Rate consolidados de la cartera.
-* **Persistencia JSON:** Permite guardar y cargar configuraciones completas de carteras (como `BTC_ETH_XRP_SOL_Portfolio.json`).
-
-
-
-
-
-
-
+* **Modo "Solo Short"**:
+  $$\text{Señal}_t = \begin{cases} \text{SHORT}, & \text{si } \Delta_{exp} < -\theta \\ \text{NEUTRAL}, & \text{en otro caso} \end{cases}$$
 
 ---
 
-## 4. 🤖 Notas para futuros modelos de IA (Contexto para Mejoras)
+### 3.2. Formulación Matemática de los Mecanismos de Riesgo
 
-Si eres un modelo de Inteligencia Artificial leyendo esto para mejorar el sistema, aquí tienes los puntos críticos sobre los que debes iterar:
+#### A. Stop Loss ($SL$) y Take Profit ($TP$) Fijos
+Si una posición se abre al precio $P_{entry}$ en el instante $t_0$:
+* **Para posición Long**:
+  $$SL_{price} = P_{entry} \cdot (1 - \text{stop\_loss\_pct})$$
+  $$TP_{price} = P_{entry} \cdot (1 + \text{take\_profit\_pct})$$
+* **Para posición Short**:
+  $$SL_{price} = P_{entry} \cdot (1 + \text{stop\_loss\_pct})$$
+  $$TP_{price} = P_{entry} \cdot (1 - \text{take\_profit\_pct})$$
 
-> [!NOTE]
-> **Contexto Técnico:** El modelo `TimesFM` base es *univariante*, por lo tanto el predictor (`model_inference.py`) actualmente solo recibe el array unidimensional de cierres (`close`).
+#### B. Stop Loss Adaptativo por Volatilidad (Volatility Adaptive SL)
+En lugar de un porcentaje rígido, calcula la volatilidad histórica local a partir de los retornos logarítmicos o porcentuales de las velas de contexto:
 
-### Áreas de Mejora Sugeridas:
+$$r_\tau = \frac{P_\tau - P_{\tau-1}}{P_{\tau-1}}, \quad \forall \tau \in [t-N_{ctx}+1, t]$$
 
-1. **Punto ciego del Step Size:** 
-   En `backtester.py`, la variable `step_size = 6` (avanzar de 6 en 6 velas) se implementó para agilizar el tiempo de backtest en la prueba de concepto. **Tarea futura:** Mejorar la eficiencia del loop (o implementar inferencia por lotes/batch forecasting en TimesFM) para poder iterar con `step_size = 1` y tener un Stop-Loss 100% preciso vela a vela.
-2. **Integración de Covariables (XReg):**
-   TimesFM 2.5 permite variables exógenas (covariables). **Tarea futura:** Modificar `data_loader.py` para extraer el `volume` y covariables de calendario (hora, día de la semana), y actualizar `model_inference.py` para usar `model.forecast_with_covariates()`.
-3. **Gestión de Riesgo Avanzada (Uso de Cuantiles):**
-   Actualmente el motor usa `point_fc[-1]` (el pronóstico mediano) para decidir la dirección. **Tarea futura:** Modificar `backtester.py` para que lea `quant_fc` (por ejemplo el cuantil 10 y el cuantil 90) y no opere si la banda de incertidumbre/riesgo es muy ancha.
-4. **Position Sizing Dinámico:**
-   Actualmente el bot apuesta su porción asignada en cada operación. **Tarea futura:** Añadir una fracción de Kelly o un modelo de riesgo fijo (ej. arriesgar solo el 2% del capital en caso de tocar Stop-Loss).
-5. **Comisiones de Funding (Futuros):**
-   Si la estrategia es de Futuros Perpetuos, **Tarea futura:** añadir las *Funding Rates* periódicas que se cobran/pagan por mantener posiciones Short/Long prolongadas.
+$$\sigma_{local} = \sqrt{\frac{1}{N_{ctx}-1} \sum_{\tau} (r_\tau - \bar{r})^2}$$
+
+El porcentaje de Stop Loss adaptativo efectivo ($\text{SL}_{effective}$) se determina multiplicando $\sigma_{local}$ por el parámetro $k = \text{volatility\_multiplier}$ y aplicando un piso de seguridad con el Stop Loss base:
+
+$$\text{SL}_{effective} = \max\left(\text{stop\_loss\_pct}, \, k \cdot \sigma_{local}\right)$$
+
+#### C. Protección Break-Even ($BE$)
+Permite asegurar una posición en riesgo cero trasladando el Stop Loss al precio de entrada $P_{entry}$ una vez alcanzado un cierto umbral de ganancia en desarrollo $\eta = \text{break\_even\_trigger\_pct}$:
+* **Long**: Si en cualquier instante $\tau > t_0$ el precio máximo alcanza $P_\tau \ge P_{entry} \cdot (1 + \eta)$, se activa la bandera $BE_{active} = \text{True}$ y se fija $SL_{price} = P_{entry}$.
+* **Short**: Si el precio mínimo alcanza $P_\tau \le P_{entry} \cdot (1 - \eta)$, se activa $BE_{active} = \text{True}$ y se fija $SL_{price} = P_{entry}$.
+
+#### D. Trailing Stop Loss Dinámico ($TSL$)
+Mantiene un nivel de Stop Loss dinámico que acompaña al precio a medida que la operación acumula ganancias, garantizando la captura de tendencias:
+* **Long**: Registra el precio máximo alcanzado desde la entrada $P_{peak}(\tau) = \max_{s \in [t_0, \tau]} P_s$. El precio de parada dinámico evoluciona como:
+  $$SL_{dynamic}(\tau) = \max\left(SL_{base}, \, P_{peak}(\tau) \cdot (1 - \text{trailing\_sl\_pct})\right)$$
+* **Short**: Registra el precio mínimo alcanzado $P_{trough}(\tau) = \min_{s \in [t_0, \tau]} P_s$. El precio de parada dinámico evoluciona como:
+  $$SL_{dynamic}(\tau) = \min\left(SL_{base}, \, P_{trough}(\tau) \cdot (1 + \text{trailing\_sl\_pct})\right)$$
+
+#### E. Dimensionamiento por Confianza Cuantílica (Quantile Sizing)
+Ajusta el tamaño del capital de la posición en función de la distribución probabilística proyectada por los cuantiles $q_{10}$ y $q_{90}$ de TimesFM:
+* **Entrada Long de Alta Confianza**: Si el cuantil pesimista $q_{10}$ al final del horizonte está por encima del precio actual:
+  $$q_{10}(t+N_{hor}) > P_t \implies \text{Multiplicador de Capital} = c_{mult} \quad (\text{confidence\_multiplier})$$
+* **Entrada Short de Alta Confianza**: Si el cuantil optimista $q_{90}$ al final del horizonte está por debajo del precio actual:
+  $$q_{90}(t+N_{hor}) < P_t \implies \text{Multiplicador de Capital} = c_{mult}$$
+En caso contrario, la posición opera con el tamaño estándar ($1.0\text{x}$).
+
+#### F. Filtro de Incertidumbre Probabilística (Uncertainty Filter)
+Evalúa el ancho de la banda de incertidumbre del modelo al final del horizonte de predicción. Se define la dispersión relativa de incertidumbre $U_t$ como:
+
+$$U_t = \frac{q_{90}(t+N_{hor}) - q_{10}(t+N_{hor})}{P_t}$$
+
+Si $U_t > U_{max}$ (donde $U_{max} = \text{max\_uncertainty\_pct}$), el sistema desestima la señal de entrada y permanece en liquidez, evitando operar en situaciones de alta inconsistencia del modelo.
+
+#### G. Gestión de Operaciones Simultáneas (Overlapping Trades)
+En el modo de ejecuciones simultáneas (`overlapping = True`), el motor permite mantener hasta $M_{pos} = \text{max\_positions}$ operaciones abiertas al mismo tiempo.
+* **Asignación de Capital**: Sea $C_{avail}(\tau)$ el capital líquido no invertido en el instante $\tau$, y $N_{active}(\tau)$ el número de posiciones abiertas en ese momento. Al generarse una nueva señal, el capital asignado a la nueva posición $j$ es:
+  $$C_{allocated, j} = \frac{C_{avail}(\tau)}{M_{pos} - N_{active}(\tau)}$$
+* **Valoración Global (Mark-to-Market)**: La equidad total del portafolio $E(\tau)$ en cualquier vela $\tau$ es la suma del capital disponible más la valoración no realizada de cada posición $j$:
+  $$E(\tau) = C_{avail}(\tau) + \sum_{j=1}^{N_{active}(\tau)} MTM_j(\tau)$$
+  donde $MTM_j(\tau) = C_{allocated, j} \cdot \left(1 \pm \frac{P_\tau - P_{entry, j}}{P_{entry, j}}\right)$.
 
 ---
 
-## 5. Dashboard y Visualización (`app.py`)
+## 4. Definición Detallada y Fórmulas Matemáticas de los Indicadores del Dashboard
 
-El dashboard actual actúa como el centro de control del sistema de backtesting. Está diseñado para ser simple pero altamente reactivo a los parámetros de entrada.
+El dashboard de evaluación cuantitativa presenta una batería de indicadores de rendimiento y métricas de riesgo de grado institucional. A continuación se desglosa la definición matemática exacta de cada uno.
 
-**Implementación Actual:**
-* **Tecnología:** `Streamlit` para el renderizado web y reactividad, `Plotly Graph Objects` para los gráficos.
-* **Sidebar (Panel Lateral):** Contiene el gestor de estrategias guardadas, selectores de activo, intervalo, fechas, parámetros del modelo (`context_len`, `horizon_len`, `step_size`), gestión de riesgo (Stop-Loss, Take-Profit, Umbral) y el modo de ejecución simultánea con slider de posiciones máximas.
-* **Panel Principal:**
-  * **Pestaña 📊 Resumen:** KPIs principales, guardado de estrategias en JSON y la gráfico interactivo de Curva de Equidad vs Buy & Hold.
-  * **Pestaña 🕯️ Gráficos Avanzados:** Gráfico profesional de velas OHLC con marcadores de compra/venta/SL/TP, gráfico de Drawdown subacuático y barras de Volumen.
-  * **Pestaña 🌡️ Rentabilidad Mensual:** Heatmap interactivo con matriz de retornos porcentuales por mes y año.
-  * **Pestaña 📋 Operaciones:** Tabla contable detallada (Trade Log) con contadores de entradas, cierres normales, TP y SL hit, e informe descriptivo de la estrategia.
+### 4.1. Retorno Total ($R_{total}$)
+Mide la ganancia o pérdida porcentual neta acumulada por la cuenta desde el inicio de la simulación hasta la última vela.
 
+$$R_{total} = \frac{E_{final} - E_{initial}}{E_{initial}}$$
+
+*Donde $E_{initial}$ es el capital inicial (ej. $\$1000$ USD) y $E_{final}$ es el capital resultante final tras cerrar todas las posiciones.*
+
+### 4.2. P&L Neta en USD ($PnL_{usd}$)
+Representa la variación absoluta del capital expresada en dólares estadounidenses.
+
+$$PnL_{usd} = E_{final} - E_{initial}$$
+
+### 4.3. Máximo Drawdown ($MDD$)
+Mide la máxima caída porcentual experimentada por la curva de equidad desde un pico histórico (*peak*) hasta un valle posterior (*trough*). Es el indicador fundamental del riesgo de la estrategia.
+
+Dado el historial de equidad $E(t)$ para $t \in [0, T]$, se define primero el pico acumulado $H(t)$:
+
+$$H(t) = \max_{\tau \le t} E(\tau)$$
+
+El Drawdown porcentual en cualquier punto $t$ es:
+
+$$DD(t) = \frac{E(t) - H(t)}{H(t)}$$
+
+El Máximo Drawdown ($MDD$) es la caída más severa observada en todo el periodo:
+
+$$MDD = \min_{t \in [0, T]} DD(t)$$
+
+### 4.4. Ratio de Sharpe ($SR$)
+Mide el retorno excedente de la estrategia por unidad de riesgo o volatilidad total. Asumiendo una tasa libre de riesgo $R_f = 0$, se calcula a partir de los retornos diarios de la curva de equidad $r_d$:
+
+$$r_d = \frac{E_d - E_{d-1}}{E_{d-1}}$$
+
+$$\bar{r}_d = \frac{1}{N_d} \sum_{d=1}^{N_d} r_d, \quad \sigma_d = \sqrt{\frac{1}{N_d - 1} \sum_{d=1}^{N_d} (r_d - \bar{r}_d)^2}$$
+
+El Ratio de Sharpe anualizado (considerando 365 días de negociación en criptomonedas) es:
+
+$$SR = \frac{\bar{r}_d}{\sigma_d} \cdot \sqrt{365}$$
+
+*Interpretación:* $SR > 1.0$ indica un buen ajuste riesgo-beneficio; $SR > 2.0$ representa un rendimiento institucional excelente.
+
+### 4.5. Ratio de Sortino ($SoR$)
+A diferencia del Ratio de Sharpe, el Ratio de Sortino evalúa el retorno ajustado únicamente por la **volatilidad a la baja** (*downside risk*), ignorando las fluctuaciones positivas.
+
+Se define la desviación estándar a la baja ($\sigma_{down}$):
+
+$$\sigma_{down} = \sqrt{\frac{1}{N_d} \sum_{d=1}^{N_d} \left(\min(0, r_d)\right)^2}$$
+
+El Ratio de Sortino anualizado se formula como:
+
+$$SoR = \frac{\bar{r}_d}{\sigma_{down}} \cdot \sqrt{365}$$
+
+### 4.6. Tasa de Acierto / Win Rate ($WR$)
+Porcentaje de operaciones cerradas con beneficio neto positivo respecto al total de operaciones ejecutadas.
+
+$$WR = \frac{N_{ganadoras}}{N_{total\_trades}}$$
+
+*Donde $N_{ganadoras}$ es la cantidad de trades con $PnL_{usd} > 0$.*
+
+### 4.7. Factor de Beneficio / Profit Factor ($PF$)
+Relación entre la ganancia bruta acumulada por las operaciones ganadoras y la pérdida bruta acumulada por las operaciones perdedoras.
+
+$$PF = \frac{\sum_{j \in \text{ganadoras}} PnL_j}{\sum_{k \in \text{perdedoras}} |PnL_k|}$$
+
+*Interpretación:* $PF > 1.0$ indica una estrategia rentable. $PF \ge 1.5$ refleja una sólida ventaja cuantitativa.
+
+### 4.8. Expectancia por Operación ($E_{trade}$)
+Monto promedio en dólares que la estrategia espera ganar (o perder) en cada operación ejecutada.
+
+$$E_{trade} = \left(WR \cdot \bar{W}\right) - \left((1 - WR) \cdot |\bar{L}|\right)$$
+
+*Donde $\bar{W}$ es la ganancia promedio de las operaciones ganadoras en USD, y $|\bar{L}|$ es la pérdida promedio de las operaciones perdedoras en USD.*
+
+### 4.9. Desglose de Operaciones y Filtros ($N_{entries}, N_{high}, N_{filt}$)
+* **Total Operaciones ($N_{trades}$)**: Número total de entradas ejecutadas por el bot.
+* **Alta Confianza ($N_{high}$)**: Cantidad de entradas donde la predicción cuantílica activó el multiplicador de tamaño por alta certidumbre.
+* **Filtradas por Incertidumbre ($N_{filt}$)**: Número de oportunidades de entrada que fueron descartadas automáticamente por el motor debido a que la dispersión cuantílica superó el límite `max_uncertainty_pct`.
+
+---
+
+## 5. Estructura de Archivos JSON de Configuración (`saved_strategies/`)
+
+Las estrategias y carteras se guardan y cargan mediante archivos JSON estructurados. A continuación se muestra el esquema completo de parámetros con la descripción y tipo de dato de cada clave:
+
+```json
+{
+  "analysis_mode": "Cartera Multi-Activo",
+  "quote_asset": "USDC",
+  "trade_direction": "Solo Long",
+  "symbol": "BTCUSDC",
+  "portfolio_symbols": [
+    "BTCUSDC",
+    "ETHUSDC",
+    "SOLUSDC",
+    "BNBUSDC"
+  ],
+  "custom_portfolio_symbols": "",
+  "interval": "1d",
+  "start_date": "2026-01-01",
+  "end_date": "2026-06-28",
+  "context_len": 512,
+  "horizon_len": 24,
+  "step_size": 1,
+  "initial_capital": 1000.0,
+  "stop_loss_pct": 3.0,
+  "exit_mode": "Take Profit Fijo",
+  "take_profit_pct": 6.0,
+  "trailing_sl_pct": 2.0,
+  "break_even": true,
+  "break_even_trigger_pct": 2.0,
+  "threshold_pct": 1.5,
+  "overlapping": false,
+  "max_positions": 1,
+  "dynamic_sizing": false,
+  "confidence_multiplier": 1.5,
+  "uncertainty_filter": true,
+  "max_uncertainty_pct": 6.0,
+  "adaptive_sl": false,
+  "volatility_multiplier": 2.0
+}
+```
+
+### Tabla de Mapeo de Claves JSON
+
+| Clave JSON | Tipo | Descripción y Correspondencia en el Código |
+|---|---|---|
+| `analysis_mode` | `string` | `"Activo Único"` o `"Cartera Multi-Activo"`. |
+| `quote_asset` | `string` | Mercado base: `"USDT"` o `"USDC"`. |
+| `trade_direction` | `string` | `"Long & Short"`, `"Solo Long"`, o `"Solo Short"`. |
+| `symbol` | `string` | Par principal seleccionado para activo único (ej. `"BTCUSDC"`). |
+| `portfolio_symbols` | `array[str]` | Lista de pares incluidos en el backtest multi-activo. |
+| `custom_portfolio_symbols`| `string` | Cadena de texto con pares adicionales ingresados manualmente. |
+| `interval` | `string` | Marco temporal de velas Binance (`"1m"` a `"1M"`). |
+| `start_date` / `end_date` | `string` | Fechas límites en formato ISO (`"YYYY-MM-DD"`). |
+| `context_len` | `integer` | Número de velas de contexto para TimesFM (ej. `512`). |
+| `horizon_len` | `integer` | Velas proyectadas hacia el futuro por el modelo (ej. `24`). |
+| `step_size` | `integer` | Paso del bucle walk-forward (ej. `1` o `6`). |
+| `initial_capital` | `float` | Capital inicial total en USD para la simulación. |
+| `stop_loss_pct` | `float` | Porcentaje de Stop Loss inicial (expresado en escala $0-100$ en JSON). |
+| `exit_mode` | `string` | `"Take Profit Fijo"` o `"Trailing Stop Loss (Dinámico)"`. |
+| `take_profit_pct` | `float` | Porcentaje de Take Profit fijo ($0-100$). |
+| `trailing_sl_pct` | `float` | Distancia porcentual del Trailing Stop Loss ($0-100$). |
+| `break_even` | `boolean` | `true` para activar protección a precio de entrada. |
+| `break_even_trigger_pct` | `float` | Porcentaje de ganancia para activar Break-Even ($0-100$). |
+| `threshold_pct` | `float` | Umbral porcentual mínimo para validar una señal de entrada. |
+| `overlapping` | `boolean` | `true` para permitir ejecuciones simultáneas de posiciones. |
+| `max_positions` | `integer` | Límite máximo de posiciones abiertas simultáneamente ($2-10$). |
+| `dynamic_sizing` | `boolean` | `true` para activar Quantile Sizing basado en confianza cuantílica. |
+| `confidence_multiplier` | `float` | Factor multiplicador de capital en operaciones de alta confianza ($1.1-3.0$). |
+| `uncertainty_filter` | `boolean` | `true` para filtrar entradas con dispersión cuantílica alta. |
+| `max_uncertainty_pct` | `float` | Límite máximo de dispersión cuantílica tolerada ($1.0-15.0$). |
+| `adaptive_sl` | `boolean` | `true` para ajustar el Stop Loss según la volatilidad local ($\sigma$). |
+| `volatility_multiplier` | `float` | Multiplicador $k$ aplicado a la volatilidad ($\sigma$). |
+
+---
+
+## 6. Guía de Desarrollo e Iteración para Futuros Desarrolladores e Inteligencias Artificiales
+
+Si eres un desarrollador o un modelo de Inteligencia Artificial trabajando en este repositorio, considera las siguientes pautas técnicas clave para modificar o expandir el código sin introducir regresiones:
+
+### 6.1. Extensión de Métricas y Cálculos en Inferencia por Lotes
+Cualquier nueva métrica de filtrado o análisis predictivo derivado del modelo debe integrarse dentro de la función `_precompute_forecasts` en `backtester.py`. De este modo se aprovecha el empaquetado por lotes `predict_batch` de `model_inference.py`, previniendo cuellos de botella en la ejecución del bucle.
+
+### 6.2. Persistencia de Parámetros de Sesión
+Si se añade un nuevo control o parámetro en la barra lateral de `app.py`:
+1. Debe incluir una clave de estado `key="cfg_nombre_parametro"`.
+2. Debe registrarse en la función `_apply_strategy_to_session_state` para que se actualice al cargar archivos JSON guardados.
+3. Debe incluirse en la lista de argumentos que recibe `_on_save_clicked` para serializarse correctamente en el disco.
+
+### 6.3. Mantener Determinismo y Compatibilidad Histórica
+La opción predeterminada de cualquier nuevo selector de dirección o filtrado debe conservar la ejecución simétrica original (`trade_direction = "Long & Short"`). Esto asegura que los backtests de referencia continúen arrojando resultados deterministas idénticos a los históricos.
