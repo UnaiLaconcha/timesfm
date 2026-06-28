@@ -110,6 +110,12 @@ Como alternativa al Take Profit fijo, el sistema incluye la opción de **Trailin
 * **Lógica en Posición Short:** El sistema registra de manera continua el precio mínimo alcanzado (`lowest_price`). El nivel de Stop Loss dinámico se actualiza a: `dynamic_sl = min(entry_price * (1 + stop_loss_pct), lowest_price * (1 + trailing_sl_pct))`. Si el precio repunta y toca el nivel dinámico, la posición se liquida con el tipo `CLOSE_SHORT_TSL`.
 * **Integración:** Funciona tanto en ejecuciones de posición única como en operaciones simultáneas (donde cada posición rastrea su propio Trailing SL independiente).
 
+### 3.6. Modo Break-Even Stop Loss (Protección a Entrada)
+El sistema permite activar la función **Break-Even**, la cual protege la cuenta trasladando el Stop Loss al precio exacto de entrada en cuanto la operación alcanza un beneficio porcentual determinado (`break_even_trigger_pct`).
+* **Activación y Ejecución:** En cada vela, si una posición alcanza el porcentaje de ganancia especificado (ej. +1.5%), el Stop Loss de esa operación se actualiza automáticamente a `entry_price`. Si el mercado se da la vuelta y retrocede, la operación se liquida en el punto de entrada registrándose con el tipo `CLOSE_LONG_BE` o `CLOSE_SHORT_BE`, garantizando que la operación termine con cero pérdidas netas.
+* **Combinabilidad:** Puede utilizarse de forma independiente con Take Profit Fijo o combinarse dinámicamente con Trailing Stop Loss.
+
+
 
 ---
 

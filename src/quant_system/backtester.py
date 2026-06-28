@@ -7,7 +7,7 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015):
         """
         Runs a walk-forward backtest using TimesFM predictions.
         df: DataFrame with at least 'close' prices.
@@ -20,22 +20,25 @@ class BacktestEngine:
         max_positions: maximum number of simultaneous positions (only used when overlapping=True).
         trailing_sl: if True, use dynamic Trailing Stop Loss instead of static TP.
         trailing_sl_pct: distance percentage for trailing stop loss (e.g., 0.02 for 2%).
+        break_even: if True, move stop loss to entry price once trigger profit is reached.
+        break_even_trigger_pct: profit percentage required to trigger Break-Even (e.g., 0.015 for 1.5%).
         """
         context_len = model_predictor.context_len
         if len(df) < context_len + horizon_len:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct)
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct):
-        """Single-position backtest logic supporting both static TP/SL and dynamic Trailing SL."""
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct):
+        """Single-position backtest logic supporting TP/SL, Trailing SL, and Break-Even protection."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
         entry_price = 0
         extreme_price = 0 # peak for Long, trough for Short
+        be_activated = False
         
         equity_curve = []
         
@@ -52,16 +55,25 @@ class BacktestEngine:
             
             equity_curve.append((current_idx, current_equity))
             
-            # Check Take Profit & Stop Loss
+            # Check Take Profit & Stop Loss & Break-Even
             if position == 1:
+                if break_even and not be_activated:
+                    if current_price >= entry_price * (1 + break_even_trigger_pct):
+                        be_activated = True
+
+                base_sl = entry_price if be_activated else entry_price * (1 - stop_loss_pct)
+
                 if trailing_sl:
                     extreme_price = max(extreme_price, current_price)
-                    # Dynamic Trailing SL level cannot drop below initial SL level
-                    initial_sl = entry_price * (1 - stop_loss_pct)
-                    dynamic_sl = max(initial_sl, extreme_price * (1 - trailing_sl_pct))
+                    dynamic_sl = max(base_sl, extreme_price * (1 - trailing_sl_pct))
                     if current_price <= dynamic_sl:
                         capital = current_equity * (1 - self.fee_rate)
-                        trade_type = 'CLOSE_LONG_TSL' if dynamic_sl > initial_sl else 'CLOSE_LONG_SL'
+                        if be_activated and dynamic_sl == entry_price:
+                            trade_type = 'CLOSE_LONG_BE'
+                        elif dynamic_sl > base_sl:
+                            trade_type = 'CLOSE_LONG_TSL'
+                        else:
+                            trade_type = 'CLOSE_LONG_SL'
                         self.trades.append({'time': current_idx, 'type': trade_type, 'price': current_price, 'capital': capital})
                         position = 0
                         continue
@@ -71,20 +83,31 @@ class BacktestEngine:
                         self.trades.append({'time': current_idx, 'type': 'CLOSE_LONG_TP', 'price': current_price, 'capital': capital})
                         position = 0
                         continue
-                    elif current_price <= entry_price * (1 - stop_loss_pct):
+                    elif current_price <= base_sl:
                         capital = current_equity * (1 - self.fee_rate)
-                        self.trades.append({'time': current_idx, 'type': 'CLOSE_LONG_SL', 'price': current_price, 'capital': capital})
+                        trade_type = 'CLOSE_LONG_BE' if be_activated else 'CLOSE_LONG_SL'
+                        self.trades.append({'time': current_idx, 'type': trade_type, 'price': current_price, 'capital': capital})
                         position = 0
                         continue
 
             elif position == -1:
+                if break_even and not be_activated:
+                    if current_price <= entry_price * (1 - break_even_trigger_pct):
+                        be_activated = True
+
+                base_sl = entry_price if be_activated else entry_price * (1 + stop_loss_pct)
+
                 if trailing_sl:
                     extreme_price = min(extreme_price, current_price)
-                    initial_sl = entry_price * (1 + stop_loss_pct)
-                    dynamic_sl = min(initial_sl, extreme_price * (1 + trailing_sl_pct))
+                    dynamic_sl = min(base_sl, extreme_price * (1 + trailing_sl_pct))
                     if current_price >= dynamic_sl:
                         capital = current_equity * (1 - self.fee_rate)
-                        trade_type = 'CLOSE_SHORT_TSL' if dynamic_sl < initial_sl else 'CLOSE_SHORT_SL'
+                        if be_activated and dynamic_sl == entry_price:
+                            trade_type = 'CLOSE_SHORT_BE'
+                        elif dynamic_sl < base_sl:
+                            trade_type = 'CLOSE_SHORT_TSL'
+                        else:
+                            trade_type = 'CLOSE_SHORT_SL'
                         self.trades.append({'time': current_idx, 'type': trade_type, 'price': current_price, 'capital': capital})
                         position = 0
                         continue
@@ -94,9 +117,10 @@ class BacktestEngine:
                         self.trades.append({'time': current_idx, 'type': 'CLOSE_SHORT_TP', 'price': current_price, 'capital': capital})
                         position = 0
                         continue
-                    elif current_price >= entry_price * (1 + stop_loss_pct):
+                    elif current_price >= base_sl:
                         capital = current_equity * (1 - self.fee_rate)
-                        self.trades.append({'time': current_idx, 'type': 'CLOSE_SHORT_SL', 'price': current_price, 'capital': capital})
+                        trade_type = 'CLOSE_SHORT_BE' if be_activated else 'CLOSE_SHORT_SL'
+                        self.trades.append({'time': current_idx, 'type': trade_type, 'price': current_price, 'capital': capital})
                         position = 0
                         continue
             
@@ -114,17 +138,17 @@ class BacktestEngine:
             
             # Decision logic (only for position == 0)
             if expected_move > threshold_pct:
-                # Enter Long
                 position = 1
                 entry_price = current_price
                 extreme_price = current_price
-                capital *= (1 - self.fee_rate) # Deduct fee on entry
+                be_activated = False
+                capital *= (1 - self.fee_rate)
                 self.trades.append({'time': current_idx, 'type': 'ENTER_LONG', 'price': current_price, 'capital': capital})
             elif expected_move < -threshold_pct:
-                # Enter Short
                 position = -1
                 entry_price = current_price
                 extreme_price = current_price
+                be_activated = False
                 capital *= (1 - self.fee_rate)
                 self.trades.append({'time': current_idx, 'type': 'ENTER_SHORT', 'price': current_price, 'capital': capital})
 
@@ -142,7 +166,6 @@ class BacktestEngine:
         
         equity_df = pd.DataFrame(equity_curve, columns=['timestamp', 'equity']).set_index('timestamp')
         
-        # Calculate metrics
         returns = equity_df['equity'].pct_change().dropna()
         total_return = (capital - self.initial_capital) / self.initial_capital
         sharpe_ratio = np.sqrt(365 * 24 / step_size) * returns.mean() / returns.std() if len(returns) > 1 and returns.std() != 0 else 0
@@ -162,12 +185,12 @@ class BacktestEngine:
             }
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct):
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct):
         """
-        Overlapping-positions backtest with optional Trailing SL support.
+        Overlapping-positions backtest with Break-Even and Trailing SL support.
         """
         available_capital = self.initial_capital
-        active_positions = []  # list of dicts: {direction, entry_price, entry_capital, entry_time, extreme_price}
+        active_positions = []  # list of dicts: {direction, entry_price, entry_capital, entry_time, extreme_price, be_activated}
 
         equity_curve = []
 
@@ -175,35 +198,58 @@ class BacktestEngine:
             current_idx = df.index[i]
             current_price = df['close'].iloc[i]
 
-            # ── Step 1: Check SL/TP for all active positions ──
+            # ── Step 1: Check SL/TP/BE for all active positions ──
             positions_to_close = []
             for pos_idx, pos in enumerate(active_positions):
                 if pos['direction'] == 1:  # Long
+                    if break_even and not pos['be_activated']:
+                        if current_price >= pos['entry_price'] * (1 + break_even_trigger_pct):
+                            pos['be_activated'] = True
+
+                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 - stop_loss_pct)
+
                     if trailing_sl:
                         pos['extreme_price'] = max(pos['extreme_price'], current_price)
-                        initial_sl = pos['entry_price'] * (1 - stop_loss_pct)
-                        dynamic_sl = max(initial_sl, pos['extreme_price'] * (1 - trailing_sl_pct))
+                        dynamic_sl = max(base_sl, pos['extreme_price'] * (1 - trailing_sl_pct))
                         if current_price <= dynamic_sl:
-                            trade_type = 'CLOSE_LONG_TSL' if dynamic_sl > initial_sl else 'CLOSE_LONG_SL'
+                            if pos['be_activated'] and dynamic_sl == pos['entry_price']:
+                                trade_type = 'CLOSE_LONG_BE'
+                            elif dynamic_sl > base_sl:
+                                trade_type = 'CLOSE_LONG_TSL'
+                            else:
+                                trade_type = 'CLOSE_LONG_SL'
                             positions_to_close.append((pos_idx, trade_type))
                     else:
                         if take_profit_pct > 0 and current_price >= pos['entry_price'] * (1 + take_profit_pct):
                             positions_to_close.append((pos_idx, 'CLOSE_LONG_TP'))
-                        elif current_price <= pos['entry_price'] * (1 - stop_loss_pct):
-                            positions_to_close.append((pos_idx, 'CLOSE_LONG_SL'))
+                        elif current_price <= base_sl:
+                            trade_type = 'CLOSE_LONG_BE' if pos['be_activated'] else 'CLOSE_LONG_SL'
+                            positions_to_close.append((pos_idx, trade_type))
+
                 elif pos['direction'] == -1:  # Short
+                    if break_even and not pos['be_activated']:
+                        if current_price <= pos['entry_price'] * (1 - break_even_trigger_pct):
+                            pos['be_activated'] = True
+
+                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 + stop_loss_pct)
+
                     if trailing_sl:
                         pos['extreme_price'] = min(pos['extreme_price'], current_price)
-                        initial_sl = pos['entry_price'] * (1 + stop_loss_pct)
-                        dynamic_sl = min(initial_sl, pos['extreme_price'] * (1 + trailing_sl_pct))
+                        dynamic_sl = min(base_sl, pos['extreme_price'] * (1 + trailing_sl_pct))
                         if current_price >= dynamic_sl:
-                            trade_type = 'CLOSE_SHORT_TSL' if dynamic_sl < initial_sl else 'CLOSE_SHORT_SL'
+                            if pos['be_activated'] and dynamic_sl == pos['entry_price']:
+                                trade_type = 'CLOSE_SHORT_BE'
+                            elif dynamic_sl < base_sl:
+                                trade_type = 'CLOSE_SHORT_TSL'
+                            else:
+                                trade_type = 'CLOSE_SHORT_SL'
                             positions_to_close.append((pos_idx, trade_type))
                     else:
                         if take_profit_pct > 0 and current_price <= pos['entry_price'] * (1 - take_profit_pct):
                             positions_to_close.append((pos_idx, 'CLOSE_SHORT_TP'))
-                        elif current_price >= pos['entry_price'] * (1 + stop_loss_pct):
-                            positions_to_close.append((pos_idx, 'CLOSE_SHORT_SL'))
+                        elif current_price >= base_sl:
+                            trade_type = 'CLOSE_SHORT_BE' if pos['be_activated'] else 'CLOSE_SHORT_SL'
+                            positions_to_close.append((pos_idx, trade_type))
 
             # Close positions in reverse order to preserve indices
             for pos_idx, close_type in sorted(positions_to_close, key=lambda x: x[0], reverse=True):
@@ -243,6 +289,7 @@ class BacktestEngine:
                         'entry_capital': alloc_capital_after_fee,
                         'entry_time': current_idx,
                         'extreme_price': current_price,
+                        'be_activated': False,
                     })
 
                     self.trades.append({

@@ -192,7 +192,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
 
 /* Trade stats */
 .trade-stats {
-    display: flex; gap: 24px; margin-top: 12px;
+    display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap;
 }
 .trade-stats .stat-label {
     color: #6B7B9A; font-size: 0.75rem;
@@ -201,6 +201,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
     font-size: 1.2rem; font-weight: 600;
 }
 .trade-stats .stat-value.green  { color: #00FFA3; }
+.trade-stats .stat-value.gold   { color: #FFD700; }
 .trade-stats .stat-value.red    { color: #FF4560; }
 .trade-stats .stat-value.white  { color: #FFF; }
 </style>
@@ -254,26 +255,27 @@ def _save_strategy(name, params):
 def _apply_strategy_to_session_state(strategy_data):
     """Write strategy values into session_state keys that match widget keys."""
     key_map = {
-        "symbol":          "cfg_symbol",
-        "interval":        "cfg_interval",
-        "start_date":      "cfg_start_date",
-        "end_date":        "cfg_end_date",
-        "context_len":     "cfg_context_len",
-        "horizon_len":     "cfg_horizon_len",
-        "step_size":       "cfg_step_size",
-        "stop_loss_pct":   "cfg_stop_loss_pct",
-        "exit_mode":       "cfg_exit_mode",
-        "take_profit_pct": "cfg_take_profit_pct",
-        "trailing_sl_pct": "cfg_trailing_sl_pct",
-        "threshold_pct":   "cfg_threshold_pct",
-        "initial_capital": "cfg_initial_capital",
-        "overlapping":     "cfg_overlapping",
-        "max_positions":   "cfg_max_positions",
+        "symbol":                 "cfg_symbol",
+        "interval":               "cfg_interval",
+        "start_date":             "cfg_start_date",
+        "end_date":               "cfg_end_date",
+        "context_len":            "cfg_context_len",
+        "horizon_len":            "cfg_horizon_len",
+        "step_size":              "cfg_step_size",
+        "stop_loss_pct":          "cfg_stop_loss_pct",
+        "exit_mode":              "cfg_exit_mode",
+        "take_profit_pct":        "cfg_take_profit_pct",
+        "trailing_sl_pct":        "cfg_trailing_sl_pct",
+        "break_even":             "cfg_break_even",
+        "break_even_trigger_pct": "cfg_break_even_trigger_pct",
+        "threshold_pct":          "cfg_threshold_pct",
+        "initial_capital":        "cfg_initial_capital",
+        "overlapping":            "cfg_overlapping",
+        "max_positions":          "cfg_max_positions",
     }
     for json_key, widget_key in key_map.items():
         if json_key in strategy_data:
             val = strategy_data[json_key]
-            # Date fields stored as ISO strings need conversion
             if json_key in ("start_date", "end_date") and isinstance(val, str):
                 val = datetime.date.fromisoformat(val)
             st.session_state[widget_key] = val
@@ -284,7 +286,6 @@ if st.session_state.get("_pending_strategy_load"):
     data = _load_strategy(strategy_name)
     if data:
         _apply_strategy_to_session_state(data)
-    # Clear the flag so we don't reload every rerun
     st.session_state["_pending_strategy_load"] = None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -306,7 +307,6 @@ with st.sidebar:
         help="Selecciona una estrategia guardada para restaurar todos los parámetros.",
     )
     if selected_strategy != "Ninguna" and selected_strategy != st.session_state.get("_last_loaded_strategy"):
-        # Set a pending load flag and rerun so values are injected before widgets render
         st.session_state["_pending_strategy_load"] = selected_strategy
         st.session_state["_last_loaded_strategy"] = selected_strategy
         st.rerun()
@@ -353,6 +353,22 @@ with st.sidebar:
         trailing_sl_pct = 0.02
         take_profit_pct = st.number_input("Take Profit (%)", min_value=0.0, max_value=30.0, value=4.0, step=0.5, key="cfg_take_profit_pct") / 100.0
 
+    break_even = st.checkbox(
+        "Activar Break-Even (Mover SL a Entrada)",
+        value=False,
+        key="cfg_break_even",
+        help="Mueve el Stop Loss al precio de entrada una vez alcanzado un beneficio determinado para garantizar cero pérdidas."
+    )
+    if break_even:
+        break_even_trigger_pct = st.number_input(
+            "Gatillo Break-Even (%)",
+            min_value=0.1, max_value=15.0, value=1.5, step=0.1,
+            key="cfg_break_even_trigger_pct",
+            help="Porcentaje de beneficio necesario para mover el Stop Loss a precio de entrada."
+        ) / 100.0
+    else:
+        break_even_trigger_pct = 0.015
+
     threshold_pct = st.number_input("Umbral de Entrada (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
     initial_capital = st.number_input("Capital Inicial (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
 
@@ -363,7 +379,7 @@ with st.sidebar:
         max_positions = st.slider("Máx. Posiciones Simultáneas", 2, 10, 5, 1, key="cfg_max_positions",
                                   help="Número máximo de operaciones que pueden estar abiertas simultáneamente. El capital se reparte entre los slots disponibles.")
     else:
-        max_positions = 1  # not used in single mode, but define for clarity
+        max_positions = 1
 
     st.markdown("---")
     run_btn = st.button("🚀 Ejecutar Backtest", use_container_width=True, type="primary")
@@ -486,6 +502,8 @@ def build_advanced_chart(df, trades_df, equity_df):
             'ENTER_SHORT':     dict(sym='triangle-down', color='#FF4560', size=12, label='Short'),
             'CLOSE_LONG_SL':   dict(sym='x',             color='#FF8C00', size=10, label='SL Long'),
             'CLOSE_SHORT_SL':  dict(sym='x',             color='#FF8C00', size=10, label='SL Short'),
+            'CLOSE_LONG_BE':   dict(sym='diamond',       color='#FFD700', size=9,  label='BE Long'),
+            'CLOSE_SHORT_BE':  dict(sym='diamond',       color='#FFD700', size=9,  label='BE Short'),
             'CLOSE_LONG_TSL':  dict(sym='star',          color='#00E5FF', size=10, label='TSL Long'),
             'CLOSE_SHORT_TSL': dict(sym='star',          color='#00E5FF', size=10, label='TSL Short'),
             'CLOSE_LONG_TP':   dict(sym='circle',        color='#00FFA3', size=8,  label='TP Long'),
@@ -587,7 +605,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, th_pct, init_cap, overl, max_pos):
+def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia antes de guardar.")
@@ -605,6 +623,8 @@ def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex
             "exit_mode": ex_mode,
             "take_profit_pct": tp_pct * 100,
             "trailing_sl_pct": tsl_pct * 100,
+            "break_even": be,
+            "break_even_trigger_pct": be_trig * 100,
             "threshold_pct": th_pct * 100,
             "initial_capital": init_cap,
             "overlapping": overl,
@@ -621,7 +641,6 @@ if run_btn:
     # LOAD DATA
     with st.spinner("📡 Descargando datos históricos de Binance..."):
         try:
-            # Calculate the required context buffer to ensure we start trading exactly at start_date
             if interval == "1h":
                 delta = datetime.timedelta(hours=int(context_len))
             elif interval == "4h":
@@ -631,7 +650,7 @@ if run_btn:
             
             fetch_start = start_date - delta
             start_str = fetch_start.strftime("%Y-%m-%d %H:%M:%S")
-            end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S") # include the full end day
+            end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
             
             loader = BinanceLoader()
             df = loader.fetch_historical_data(symbol, interval, start_str, end_str)
@@ -667,6 +686,7 @@ if run_btn:
                 step_size=step_size, take_profit_pct=take_profit_pct,
                 overlapping=overlapping, max_positions=max_positions,
                 trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
+                break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
             )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
@@ -701,7 +721,7 @@ if run_btn:
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, threshold_pct, initial_capital, overlapping, max_positions)
+            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -734,23 +754,12 @@ if run_btn:
         fig_adv = build_advanced_chart(df, trades_df, equity_df)
         st.plotly_chart(fig_adv, use_container_width=True)
         st.markdown("**Leyenda de señales:**")
-        leg_cols = st.columns(4)
-        leg_cols[0].markdown("🟢 **▲ ENTER LONG** — Apertura larga")
-        leg_cols[1].markdown("🔴 **▼ ENTER SHORT** — Apertura corta")
-        leg_cols[2].markdown("🟠 **✕ STOP LOSS** — Cierre por SL")
-        leg_cols[3].markdown("🔵 **⭐ TRAILING SL** — Cierre por TSL")
-        st.markdown(
-            "<br><div style='background-color: #1E293B; padding: 15px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #3B82F6;'>"
-            "💡 <b>Análisis de la Vista Avanzada</b><br>"
-            "<span style='color:#A0AEC0; font-size: 0.9em;'>"
-            "Este gráfico profesional se divide en tres paneles sincronizados para un análisis técnico completo:"
-            "<ul>"
-            "<li><b>1. Precio y Señales (Arriba):</b> Muestra la acción del precio con velas japonesas e iconos de entradas y salidas.</li>"
-            "<li><b>2. Drawdown (Medio):</b> Mide la caída porcentual de capital respecto a su pico histórico.</li>"
-            "<li><b>3. Volumen (Abajo):</b> Muestra el volumen negociado por vela.</li>"
-            "</ul>"
-            "</span></div>", unsafe_allow_html=True
-        )
+        leg_cols = st.columns(5)
+        leg_cols[0].markdown("🟢 **▲ ENTER LONG**")
+        leg_cols[1].markdown("🔴 **▼ ENTER SHORT**")
+        leg_cols[2].markdown("🟠 **✕ STOP LOSS**")
+        leg_cols[3].markdown("🟡 **◆ BREAK-EVEN**")
+        leg_cols[4].markdown("🔵 **⭐ TRAILING SL**")
 
     # TAB 3 — HEATMAP
     with tab3:
@@ -772,10 +781,12 @@ if run_btn:
 
             entry_types = {'ENTER_LONG', 'ENTER_SHORT'}
             sl_types    = {'CLOSE_LONG_SL', 'CLOSE_SHORT_SL'}
+            be_types    = {'CLOSE_LONG_BE', 'CLOSE_SHORT_BE'}
             tsl_types   = {'CLOSE_LONG_TSL', 'CLOSE_SHORT_TSL'}
             tp_types    = {'CLOSE_LONG_TP', 'CLOSE_SHORT_TP'}
             close_types = {'CLOSE_LONG', 'CLOSE_SHORT', 'CLOSE_LONG_END', 'CLOSE_SHORT_END'}
             n_sl      = len(trades_df[trades_df['type'].isin(sl_types)])
+            n_be      = len(trades_df[trades_df['type'].isin(be_types)])
             n_tsl     = len(trades_df[trades_df['type'].isin(tsl_types)])
             n_tp      = len(trades_df[trades_df['type'].isin(tp_types)])
             n_close   = len(trades_df[trades_df['type'].isin(close_types)])
@@ -790,6 +801,8 @@ if run_btn:
                        <span class="stat-value green">{n_close}</span></div>
                   <div><span class="stat-label">TAKE PROFIT</span><br>
                        <span class="stat-value green">{n_tp}</span></div>
+                  <div><span class="stat-label">BREAK-EVEN HIT</span><br>
+                       <span class="stat-value gold">{n_be}</span></div>
                   <div><span class="stat-label">TRAILING SL</span><br>
                        <span class="stat-value green">{n_tsl}</span></div>
                   <div><span class="stat-label">STOP-LOSS HIT</span><br>
@@ -803,6 +816,7 @@ if run_btn:
         with st.expander("📖 Estrategia Aplicada — Descripción Completa"):
             mode_label = f"**Simultáneo** (máx. {max_positions} posiciones)" if overlapping else "**Secuencial** (1 posición a la vez)"
             exit_label = f"**Trailing Stop Loss** ({trailing_sl_pct*100:.1f}% distancia)" if trailing_sl else f"**Take Profit Fijo** ({take_profit_pct*100:.1f}%)"
+            be_label   = f"**Activo** (Gatillo {break_even_trigger_pct*100:.1f}%)" if break_even else "**Inactivo**"
             st.markdown(f"""
 ### Modelo: TimesFM 2.5 (Google DeepMind)
 Un modelo fundacional de series temporales univariantes entrenado por Google. Opera en modo **zero-shot**
@@ -817,18 +831,12 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Context Length | `{context_len}` velas |
 | Horizon Length | `{horizon_len}` velas |
 | Paso de Evaluación | `{step_size}` velas |
-| Stop-Loss Inicial | `{stop_loss_pct*100:.1f}%` sobre precio de entrada |
+| Stop-Loss Inicial | `{stop_loss_pct*100:.1f}%` |
 | Modo Salida | {exit_label} |
-| Umbral entrada | `{threshold_pct*100:.1f}%` de movimiento esperado |
+| Break-Even Protection | {be_label} |
+| Umbral entrada | `{threshold_pct*100:.1f}%` |
 | Capital inicial | `${initial_capital:,}` USD |
-| Taker Fee | `0.04%` por operación (estándar Binance) |
 | Modo de Ejecución | {mode_label} |
-
-**Flujo de decisión:**
-1. En cada iteración (cada `{step_size}` velas), el sistema extrae las últimas `{context_len}` velas como contexto y predice el precio al final del horizonte de `{horizon_len}` velas.
-2. Si el movimiento esperado supera `+{threshold_pct*100:.1f}%` → **ENTER LONG**.
-3. Si el movimiento esperado es inferior a `-{threshold_pct*100:.1f}%` → **ENTER SHORT**.
-4. Las operaciones se cierran según el modo de salida seleccionado ({exit_label}), Stop Loss inicial o fin de período.
 """)
 
 else:
