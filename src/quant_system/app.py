@@ -278,6 +278,8 @@ def _apply_strategy_to_session_state(strategy_data):
         "confidence_multiplier":  "cfg_confidence_multiplier",
         "uncertainty_filter":     "cfg_uncertainty_filter",
         "max_uncertainty_pct":    "cfg_max_uncertainty_pct",
+        "adaptive_sl":            "cfg_adaptive_sl",
+        "volatility_multiplier":  "cfg_volatility_multiplier",
     }
     for json_key, widget_key in key_map.items():
         if json_key in strategy_data:
@@ -343,6 +345,22 @@ with st.sidebar:
     st.markdown("### 🛡️ Gestión de Riesgo & Salida")
     stop_loss_pct = st.number_input("Stop Loss Inicial (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
     
+    adaptive_sl = st.checkbox(
+        "Stop Loss Adaptativo (Volatilidad)",
+        value=False,
+        key="cfg_adaptive_sl",
+        help="Ajusta dinámicamente el porcentaje de Stop Loss inicial según la desviación estándar de la volatilidad del mercado."
+    )
+    if adaptive_sl:
+        volatility_multiplier = st.slider(
+            "Multiplicador Volatilidad (k·σ)",
+            1.0, 4.0, 2.0, 0.5,
+            key="cfg_volatility_multiplier",
+            help="Factor k aplicado a la desviación estándar de la volatilidad del contexto."
+        )
+    else:
+        volatility_multiplier = 2.0
+
     exit_mode = st.radio(
         "Modo de Salida",
         ["Take Profit Fijo", "Trailing Stop Loss (Dinámico)"],
@@ -645,7 +663,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert):
+def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia antes de guardar.")
@@ -673,6 +691,8 @@ def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex
             "confidence_multiplier": conf_mult,
             "uncertainty_filter": uncert_filt,
             "max_uncertainty_pct": max_uncert * 100,
+            "adaptive_sl": adapt_sl,
+            "volatility_multiplier": vol_mult,
         }
         _save_strategy(clean_name, params_to_save)
         st.session_state["save_status"] = ("success", f"✅ Estrategia **{clean_name}** guardada correctamente.")
@@ -733,6 +753,7 @@ if run_btn:
                 break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
             )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
@@ -767,7 +788,7 @@ if run_btn:
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct)
+            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -872,6 +893,7 @@ if run_btn:
             be_label   = f"**Activo** (Gatillo {break_even_trigger_pct*100:.1f}%)" if break_even else "**Inactivo**"
             ds_label   = f"**Activo** ({confidence_multiplier}x en Alta Confianza)" if dynamic_sizing else "**Inactivo**"
             uf_label   = f"**Activo** (Máx. Incertidumbre {max_uncertainty_pct*100:.1f}%)" if uncertainty_filter else "**Inactivo**"
+            asl_label  = f"**Activo** ({volatility_multiplier}k·σ adaptativo)" if adaptive_sl else "**Inactivo**"
             st.markdown(f"""
 ### Modelo: TimesFM 2.5 (Google DeepMind)
 Un modelo fundacional de series temporales univariantes entrenado por Google. Opera en modo **zero-shot**
@@ -887,6 +909,7 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Horizon Length | `{horizon_len}` velas |
 | Paso de Evaluación | `{step_size}` velas |
 | Stop-Loss Inicial | `{stop_loss_pct*100:.1f}%` |
+| Stop-Loss Adaptativo | {asl_label} |
 | Modo Salida | {exit_label} |
 | Break-Even Protection | {be_label} |
 | Dynamic Confidence Sizing | {ds_label} |

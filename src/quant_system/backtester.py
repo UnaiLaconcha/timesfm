@@ -7,7 +7,7 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0):
         """
         Runs a walk-forward backtest using TimesFM predictions.
         df: DataFrame with at least 'close' prices.
@@ -26,24 +26,27 @@ class BacktestEngine:
         confidence_multiplier: multiplier factor for high-confidence trades (e.g., 1.5 for 150%).
         uncertainty_filter: if True, skip entries when prediction quantile spread exceeds max_uncertainty_pct.
         max_uncertainty_pct: maximum allowed spread between q90 and q10 relative to price (e.g., 0.05 for 5%).
+        adaptive_sl: if True, dynamically scale stop loss percentage based on recent market return volatility stddev.
+        volatility_multiplier: multiplier factor k for stddev volatility SL (e.g., 2.0 for 2*stddev).
         """
         context_len = model_predictor.context_len
         if len(df) < context_len + horizon_len:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct):
-        """Single-position backtest logic supporting TP/SL, Trailing SL, Break-Even, Dynamic Sizing, and Uncertainty Filtering."""
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier):
+        """Single-position backtest logic supporting all risk management modes including Adaptive SL."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
         entry_price = 0
         extreme_price = 0 # peak for Long, trough for Short
         be_activated = False
         size_multiplier = 1.0
+        active_sl_pct = stop_loss_pct
         filtered_count = 0
         
         equity_curve = []
@@ -67,7 +70,7 @@ class BacktestEngine:
                     if current_price >= entry_price * (1 + break_even_trigger_pct):
                         be_activated = True
 
-                base_sl = entry_price if be_activated else entry_price * (1 - stop_loss_pct)
+                base_sl = entry_price if be_activated else entry_price * (1 - active_sl_pct)
 
                 if trailing_sl:
                     extreme_price = max(extreme_price, current_price)
@@ -101,7 +104,7 @@ class BacktestEngine:
                     if current_price <= entry_price * (1 - break_even_trigger_pct):
                         be_activated = True
 
-                base_sl = entry_price if be_activated else entry_price * (1 + stop_loss_pct)
+                base_sl = entry_price if be_activated else entry_price * (1 + active_sl_pct)
 
                 if trailing_sl:
                     extreme_price = min(extreme_price, current_price)
@@ -152,6 +155,14 @@ class BacktestEngine:
                     if uncertainty_spread > max_uncertainty_pct:
                         filtered_count += 1
                         continue
+
+                # Calculate adaptive SL
+                active_sl_pct = stop_loss_pct
+                if adaptive_sl:
+                    returns = np.diff(context_data) / context_data[:-1]
+                    vol_std = np.std(returns) if len(returns) > 0 else 0.0
+                    calc_sl = vol_std * float(volatility_multiplier)
+                    active_sl_pct = max(stop_loss_pct, calc_sl)
 
                 if expected_move > threshold_pct:
                     position = 1
@@ -216,12 +227,12 @@ class BacktestEngine:
             }
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct):
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier):
         """
-        Overlapping-positions backtest with Break-Even, Trailing SL, Dynamic Sizing, and Uncertainty Filtering support.
+        Overlapping-positions backtest supporting all risk management features including Adaptive SL.
         """
         available_capital = self.initial_capital
-        active_positions = []  # list of dicts: {direction, entry_price, entry_capital, entry_time, extreme_price, be_activated, size_multiplier}
+        active_positions = []  # list of dicts: {direction, entry_price, entry_capital, entry_time, extreme_price, be_activated, size_multiplier, sl_pct}
         filtered_count = 0
 
         equity_curve = []
@@ -233,12 +244,13 @@ class BacktestEngine:
             # ── Step 1: Check SL/TP/BE for all active positions ──
             positions_to_close = []
             for pos_idx, pos in enumerate(active_positions):
+                pos_sl_pct = pos.get('sl_pct', stop_loss_pct)
                 if pos['direction'] == 1:  # Long
                     if break_even and not pos['be_activated']:
                         if current_price >= pos['entry_price'] * (1 + break_even_trigger_pct):
                             pos['be_activated'] = True
 
-                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 - stop_loss_pct)
+                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 - pos_sl_pct)
 
                     if trailing_sl:
                         pos['extreme_price'] = max(pos['extreme_price'], current_price)
@@ -263,7 +275,7 @@ class BacktestEngine:
                         if current_price <= pos['entry_price'] * (1 - break_even_trigger_pct):
                             pos['be_activated'] = True
 
-                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 + stop_loss_pct)
+                    base_sl = pos['entry_price'] if pos['be_activated'] else pos['entry_price'] * (1 + pos_sl_pct)
 
                     if trailing_sl:
                         pos['extreme_price'] = min(pos['extreme_price'], current_price)
@@ -335,6 +347,13 @@ class BacktestEngine:
                             if q90_price < current_price:
                                 size_multiplier = float(confidence_multiplier)
 
+                    active_sl_pct = stop_loss_pct
+                    if adaptive_sl:
+                        returns = np.diff(context_data) / context_data[:-1]
+                        vol_std = np.std(returns) if len(returns) > 0 else 0.0
+                        calc_sl = vol_std * float(volatility_multiplier)
+                        active_sl_pct = max(stop_loss_pct, calc_sl)
+
                     active_positions.append({
                         'direction': direction,
                         'entry_price': current_price,
@@ -342,7 +361,8 @@ class BacktestEngine:
                         'entry_time': current_idx,
                         'extreme_price': current_price,
                         'be_activated': False,
-                        'size_multiplier': size_multiplier
+                        'size_multiplier': size_multiplier,
+                        'sl_pct': active_sl_pct
                     })
 
                     self.trades.append({

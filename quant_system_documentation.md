@@ -125,6 +125,12 @@ El sistema integra el **Uncertainty Filter** para descartar señales de trading 
 * **Métrica de Incertidumbre:** Calcula la dispersión relativa de los cuantiles al final del horizonte: $\text{uncertainty\_spread} = (q_{90} - q_{10}) / \text{precio\_actual}$.
 * **Filtrado:** Si la dispersión supera el umbral máximo tolerado `max_uncertainty_pct` (ej. 5.0%), el sistema descarta la señal de entrada y no abre la posición, protegiendo la cuenta contra falsas rupturas. El número de entradas filtradas se contabiliza en la pestaña Operaciones.
 
+### 3.9. Modo Stop Loss Adaptativo por Volatilidad (Volatility Adaptive SL)
+El sistema incluye la opción **Volatility Adaptive SL** para ajustar dinámicamente el nivel de Stop Loss en función de la agitación del mercado.
+* **Cálculo Adaptativo:** En cada entrada, calcula la desviación estándar de los retornos de las velas del contexto ($\sigma$). El Stop Loss porcentual de la operación se establece en $\text{effective\_sl\_pct} = \max(\text{stop\_loss\_pct}, k \cdot \sigma)$, donde $k$ es el `volatility_multiplier` configurado en el panel lateral (ej. 2.0).
+* **Beneficio:** En mercados tranquilos mantiene un Stop Loss ceñido para proteger el capital, mientras que en entornos muy volátiles ensancha el margen para no ser expulsado por el ruido del mercado antes de que el movimiento se ejecute a favor.
+
+
 
 
 
