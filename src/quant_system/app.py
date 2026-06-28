@@ -40,22 +40,64 @@ html, body, [class*="css"] {
     color: #E8EAF6;
 }
 
-/* Sidebar */
+/* Remove default Streamlit top padding and move everything up */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+}
+.block-container {
+    padding-top: 1.2rem !important;
+    padding-bottom: 2rem !important;
+}
+
+/* Sidebar Compact Styling */
 section[data-testid="stSidebar"] {
     background: #0D1321;
     border-right: 1px solid #1E2A45;
 }
-section[data-testid="stSidebar"] .stMarkdown h2,
+section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+    padding-top: 0.8rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+}
+section[data-testid="stSidebar"] .stMarkdown h2 {
+    color: #7C8CF8;
+    font-size: 1.25rem !important;
+    margin-top: 0 !important;
+    margin-bottom: 0.4rem !important;
+    padding-top: 0 !important;
+}
 section[data-testid="stSidebar"] .stMarkdown h3 {
     color: #7C8CF8;
+    font-size: 0.92rem !important;
+    font-weight: 600 !important;
+    margin-top: 0.6rem !important;
+    margin-bottom: 0.2rem !important;
+    letter-spacing: 0.02em;
+}
+section[data-testid="stSidebar"] hr {
+    margin-top: 0.5rem !important;
+    margin-bottom: 0.5rem !important;
+    border-color: #1E2A45 !important;
+}
+section[data-testid="stSidebar"] .stNumberInput,
+section[data-testid="stSidebar"] .stTextInput,
+section[data-testid="stSidebar"] .stSelectbox,
+section[data-testid="stSidebar"] .stSlider,
+section[data-testid="stSidebar"] .stRadio,
+section[data-testid="stSidebar"] .stCheckbox {
+    margin-bottom: 0.2rem !important;
+}
+section[data-testid="stSidebar"] label {
+    font-size: 0.78rem !important;
+    color: #A0AEC0 !important;
 }
 
 /* Header banner */
 .quant-header {
     background: linear-gradient(135deg, #0F2027, #203A43, #2C5364);
     border-radius: 16px;
-    padding: 28px 36px;
-    margin-bottom: 24px;
+    padding: 24px 32px;
+    margin-bottom: 20px;
     border: 1px solid #1E3A5F;
     position: relative;
     overflow: hidden;
@@ -75,7 +117,7 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
     100% { opacity: 1;   transform: scale(1.1); }
 }
 .quant-header h1 {
-    font-size: 2rem;
+    font-size: 1.8rem;
     font-weight: 700;
     color: #FFFFFF;
     margin: 0;
@@ -83,8 +125,8 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
 }
 .quant-header p {
     color: #8DA4C4;
-    margin: 6px 0 0;
-    font-size: 0.9rem;
+    margin: 4px 0 0;
+    font-size: 0.88rem;
 }
 .badge {
     display: inline-block;
@@ -158,7 +200,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: #4B5A72;
-    margin: 18px 0 8px;
+    margin: 16px 0 8px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -301,11 +343,10 @@ if "backtest_history" not in st.session_state:
     st.session_state["backtest_history"] = []
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR
+# SIDEBAR (COMPACT & OPTIMIZED LAYOUT)
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Configuración")
-    st.markdown("---")
 
     # ── Strategy loader ──
     st.markdown("### 📂 Estrategia Guardada")
@@ -326,120 +367,85 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 📡 Activo & Datos")
-    symbol = st.text_input("Par de Trading", value="BTCUSDT", key="cfg_symbol")
-
-    _interval_options = ["1h", "4h", "1d"]
-    interval = st.selectbox("Intervalo Temporal", _interval_options, key="cfg_interval")
+    col_a1, col_a2 = st.columns(2)
+    symbol = col_a1.text_input("Par Trading", value="BTCUSDT", key="cfg_symbol")
+    interval = col_a2.selectbox("Intervalo", ["1h", "4h", "1d"], key="cfg_interval")
 
     col_d1, col_d2 = st.columns(2)
     start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
     end_date = col_d2.date_input("Fecha Fin", value=datetime.date.today(), key="cfg_end_date")
 
+    st.markdown("---")
+
     st.markdown("### 🧠 Modelo TimesFM")
     context_len = st.slider("Context Length (velas)", 128, 1024, 512, 128,
                              help="Número de velas históricas que recibe el modelo como contexto.",
                              key="cfg_context_len")
-    horizon_len = st.slider("Horizon Length (velas)", 1, 96, 24, 1,
-                             help="Cuántas velas en el futuro predice el modelo para tomar la decisión.",
-                             key="cfg_horizon_len")
-    step_size = st.slider("Paso de Evaluación (velas)", 1, 24, 6, 1,
-                           help="Frecuencia (en velas) con la que se toman decisiones. Un valor de 1 evalúa cada hora/vela (lento), mientras que 6 evalúa cada 6 velas.",
-                           key="cfg_step_size")
+    col_m1, col_m2 = st.columns(2)
+    horizon_len = col_m1.slider("Horizonte", 1, 96, 24, 1, key="cfg_horizon_len")
+    step_size = col_m2.slider("Paso Eval.", 1, 24, 6, 1, key="cfg_step_size")
+
+    st.markdown("---")
 
     st.markdown("### 🛡️ Gestión de Riesgo & Salida")
-    stop_loss_pct = st.number_input("Stop Loss Inicial (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
-    
-    adaptive_sl = st.checkbox(
-        "Stop Loss Adaptativo (Volatilidad)",
-        value=False,
-        key="cfg_adaptive_sl",
-        help="Ajusta dinámicamente el porcentaje de Stop Loss inicial según la desviación estándar de la volatilidad del mercado."
-    )
-    if adaptive_sl:
-        volatility_multiplier = st.slider(
-            "Multiplicador Volatilidad (k·σ)",
-            1.0, 4.0, 2.0, 0.5,
-            key="cfg_volatility_multiplier",
-            help="Factor k aplicado a la desviación estándar de la volatilidad del contexto."
-        )
-    else:
-        volatility_multiplier = 2.0
+    col_r1, col_r2 = st.columns(2)
+    stop_loss_pct = col_r1.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
+    threshold_pct = col_r2.number_input("Umbral (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
 
-    exit_mode = st.radio(
-        "Modo de Salida",
+    col_r3, col_r4 = st.columns(2)
+    initial_capital = col_r3.number_input("Capital (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
+    exit_mode = col_r4.radio(
+        "Modo Salida",
         ["Take Profit Fijo", "Trailing Stop Loss (Dinámico)"],
-        key="cfg_exit_mode",
-        help="Selecciona si deseas cerrar posiciones por objetivo fijo o acompañar la tendencia con Stop Loss dinámico."
+        key="cfg_exit_mode"
     )
 
     if exit_mode == "Trailing Stop Loss (Dinámico)":
         trailing_sl = True
-        trailing_sl_pct = st.number_input("Distancia Trailing SL (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_trailing_sl_pct", help="Distancia porcentual respecto al precio pico/valle a la que persigue el Stop Loss.") / 100.0
+        trailing_sl_pct = st.number_input("Distancia Trailing SL (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_trailing_sl_pct") / 100.0
         take_profit_pct = 0.0
     else:
         trailing_sl = False
         trailing_sl_pct = 0.02
         take_profit_pct = st.number_input("Take Profit (%)", min_value=0.0, max_value=30.0, value=4.0, step=0.5, key="cfg_take_profit_pct") / 100.0
 
-    break_even = st.checkbox(
-        "Activar Break-Even (Mover SL a Entrada)",
-        value=False,
-        key="cfg_break_even",
-        help="Mueve el Stop Loss al precio de entrada una vez alcanzado un beneficio determinado para garantizar cero pérdidas."
-    )
+    st.markdown("---")
+
+    st.markdown("### 🔬 Optimizaciones Avanzadas")
+    col_c1, col_c2 = st.columns(2)
+    adaptive_sl = col_c1.checkbox("SL Adaptativo", value=False, key="cfg_adaptive_sl")
+    break_even = col_c2.checkbox("Break-Even", value=False, key="cfg_break_even")
+
+    if adaptive_sl:
+        volatility_multiplier = st.slider("Mult. Volatilidad (k·σ)", 1.0, 4.0, 2.0, 0.5, key="cfg_volatility_multiplier")
+    else:
+        volatility_multiplier = 2.0
+
     if break_even:
-        break_even_trigger_pct = st.number_input(
-            "Gatillo Break-Even (%)",
-            min_value=0.1, max_value=15.0, value=1.5, step=0.1,
-            key="cfg_break_even_trigger_pct",
-            help="Porcentaje de beneficio necesario para mover el Stop Loss a precio de entrada."
-        ) / 100.0
+        break_even_trigger_pct = st.number_input("Gatillo BE (%)", min_value=0.1, max_value=15.0, value=1.5, step=0.1, key="cfg_break_even_trigger_pct") / 100.0
     else:
         break_even_trigger_pct = 0.015
 
-    threshold_pct = st.number_input("Umbral de Entrada (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
-    initial_capital = st.number_input("Capital Inicial (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
+    col_c3, col_c4 = st.columns(2)
+    dynamic_sizing = col_c3.checkbox("Quantile Sizing", value=False, key="cfg_dynamic_sizing")
+    uncertainty_filter = col_c4.checkbox("Filtro Incertidumbre", value=False, key="cfg_uncertainty_filter")
 
-    st.markdown("### 💎 Dimensionamiento de Posición")
-    dynamic_sizing = st.checkbox(
-        "Dimensionamiento por Confianza",
-        value=False,
-        key="cfg_dynamic_sizing",
-        help="Escala el tamaño de la posición cuando el cuantil pesimista de TimesFM respalda la dirección."
-    )
     if dynamic_sizing:
-        confidence_multiplier = st.slider(
-            "Multiplicador Alta Confianza",
-            1.1, 3.0, 1.5, 0.1,
-            key="cfg_confidence_multiplier",
-            help="Factor de capital asignado cuando el modelo muestra máxima confianza en los cuantiles."
-        )
+        confidence_multiplier = st.slider("Mult. Alta Confianza", 1.1, 3.0, 1.5, 0.1, key="cfg_confidence_multiplier")
     else:
         confidence_multiplier = 1.5
 
-    st.markdown("### 🔬 Filtros de Calidad de Señal")
-    uncertainty_filter = st.checkbox(
-        "Filtro de Incertidumbre",
-        value=False,
-        key="cfg_uncertainty_filter",
-        help="Descarta operaciones cuando la dispersión de cuantiles q90-q10 sea demasiado alta (mercado muy caótico)."
-    )
     if uncertainty_filter:
-        max_uncertainty_pct = st.slider(
-            "Máx. Incertidumbre Permitida (%)",
-            1.0, 15.0, 5.0, 0.5,
-            key="cfg_max_uncertainty_pct",
-            help="Amplitud máxima permitida entre q90 y q10 respecto al precio."
-        ) / 100.0
+        max_uncertainty_pct = st.slider("Máx. Incertidumbre (%)", 1.0, 15.0, 5.0, 0.5, key="cfg_max_uncertainty_pct") / 100.0
     else:
         max_uncertainty_pct = 0.05
 
+    st.markdown("---")
+
     st.markdown("### ⚡ Modo de Ejecución")
-    overlapping = st.checkbox("Operaciones Simultáneas", value=True, key="cfg_overlapping",
-                              help="Si está activo, se pueden abrir múltiples posiciones a la vez. Si no, solo una operación a la vez (modo clásico).")
+    overlapping = st.checkbox("Operaciones Simultáneas", value=True, key="cfg_overlapping")
     if overlapping:
-        max_positions = st.slider("Máx. Posiciones Simultáneas", 2, 10, 5, 1, key="cfg_max_positions",
-                                  help="Número máximo de operaciones que pueden estar abiertas simultáneamente. El capital se reparte entre los slots disponibles.")
+        max_positions = st.slider("Máx. Posiciones Simultáneas", 2, 10, 5, 1, key="cfg_max_positions")
     else:
         max_positions = 1
 
