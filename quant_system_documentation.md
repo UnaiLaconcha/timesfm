@@ -120,6 +120,12 @@ El sistema incluye la función **Dynamic Confidence Sizing**, la cual ajusta din
 * **Evaluación Cuantitativa:** Al evaluar una entrada en Long, se analiza el cuantil pesimista $q_{10}$. Si $q_{10} > \text{precio\_actual}$ (incluso en el escenario pesimista el modelo predice beneficio), se clasifica como una operación de `Alta Confianza` y se multiplica el capital asignado por el factor `confidence_multiplier` (ej. 1.5x o 2.0x). En Short, se evalúa si $q_{90} < \text{precio\_actual}$.
 * **Registro:** Las operaciones ejecutadas bajo esta condición se registran con la etiqueta de confianza `High` en el libro de órdenes.
 
+### 3.8. Modo Filtro de Incertidumbre (Uncertainty Filter)
+El sistema integra el **Uncertainty Filter** para descartar señales de trading en periodos de volatilidad o ruido de mercado excesivo.
+* **Métrica de Incertidumbre:** Calcula la dispersión relativa de los cuantiles al final del horizonte: $\text{uncertainty\_spread} = (q_{90} - q_{10}) / \text{precio\_actual}$.
+* **Filtrado:** Si la dispersión supera el umbral máximo tolerado `max_uncertainty_pct` (ej. 5.0%), el sistema descarta la señal de entrada y no abre la posición, protegiendo la cuenta contra falsas rupturas. El número de entradas filtradas se contabiliza en la pestaña Operaciones.
+
+
 
 
 

@@ -7,7 +7,7 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05):
         """
         Runs a walk-forward backtest using TimesFM predictions.
         df: DataFrame with at least 'close' prices.
@@ -24,24 +24,27 @@ class BacktestEngine:
         break_even_trigger_pct: profit percentage required to trigger Break-Even (e.g., 0.015 for 1.5%).
         dynamic_sizing: if True, scale position size based on quantile prediction confidence.
         confidence_multiplier: multiplier factor for high-confidence trades (e.g., 1.5 for 150%).
+        uncertainty_filter: if True, skip entries when prediction quantile spread exceeds max_uncertainty_pct.
+        max_uncertainty_pct: maximum allowed spread between q90 and q10 relative to price (e.g., 0.05 for 5%).
         """
         context_len = model_predictor.context_len
         if len(df) < context_len + horizon_len:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct)
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier):
-        """Single-position backtest logic supporting TP/SL, Trailing SL, Break-Even, and Dynamic Sizing."""
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct):
+        """Single-position backtest logic supporting TP/SL, Trailing SL, Break-Even, Dynamic Sizing, and Uncertainty Filtering."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
         entry_price = 0
         extreme_price = 0 # peak for Long, trough for Short
         be_activated = False
         size_multiplier = 1.0
+        filtered_count = 0
         
         equity_curve = []
         
@@ -140,34 +143,44 @@ class BacktestEngine:
             expected_move = (expected_price - current_price) / current_price
             
             # Decision logic (only for position == 0)
-            if expected_move > threshold_pct:
-                position = 1
-                entry_price = current_price
-                extreme_price = current_price
-                be_activated = False
-                size_multiplier = 1.0
-                
-                if dynamic_sizing and quant_fc is not None:
+            if expected_move > threshold_pct or expected_move < -threshold_pct:
+                # Check uncertainty filter
+                if uncertainty_filter and quant_fc is not None:
                     q10_price = quant_fc[-1, 0]
-                    if q10_price > current_price:
-                        size_multiplier = float(confidence_multiplier)
-
-                capital *= (1 - self.fee_rate)
-                self.trades.append({'time': current_idx, 'type': 'ENTER_LONG', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
-            elif expected_move < -threshold_pct:
-                position = -1
-                entry_price = current_price
-                extreme_price = current_price
-                be_activated = False
-                size_multiplier = 1.0
-
-                if dynamic_sizing and quant_fc is not None:
                     q90_price = quant_fc[-1, 8] if quant_fc.shape[1] > 8 else quant_fc[-1, -1]
-                    if q90_price < current_price:
-                        size_multiplier = float(confidence_multiplier)
+                    uncertainty_spread = (q90_price - q10_price) / current_price
+                    if uncertainty_spread > max_uncertainty_pct:
+                        filtered_count += 1
+                        continue
 
-                capital *= (1 - self.fee_rate)
-                self.trades.append({'time': current_idx, 'type': 'ENTER_SHORT', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
+                if expected_move > threshold_pct:
+                    position = 1
+                    entry_price = current_price
+                    extreme_price = current_price
+                    be_activated = False
+                    size_multiplier = 1.0
+                    
+                    if dynamic_sizing and quant_fc is not None:
+                        q10_price = quant_fc[-1, 0]
+                        if q10_price > current_price:
+                            size_multiplier = float(confidence_multiplier)
+
+                    capital *= (1 - self.fee_rate)
+                    self.trades.append({'time': current_idx, 'type': 'ENTER_LONG', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
+                elif expected_move < -threshold_pct:
+                    position = -1
+                    entry_price = current_price
+                    extreme_price = current_price
+                    be_activated = False
+                    size_multiplier = 1.0
+
+                    if dynamic_sizing and quant_fc is not None:
+                        q90_price = quant_fc[-1, 8] if quant_fc.shape[1] > 8 else quant_fc[-1, -1]
+                        if q90_price < current_price:
+                            size_multiplier = float(confidence_multiplier)
+
+                    capital *= (1 - self.fee_rate)
+                    self.trades.append({'time': current_idx, 'type': 'ENTER_SHORT', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
 
         # Close any open positions at the end
         final_price = df['close'].iloc[-1]
@@ -198,16 +211,18 @@ class BacktestEngine:
                 'total_return': total_return,
                 'sharpe_ratio': sharpe_ratio,
                 'max_drawdown': max_drawdown,
-                'total_trades': len(self.trades)
+                'total_trades': len(self.trades),
+                'filtered_trades': filtered_count
             }
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier):
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct):
         """
-        Overlapping-positions backtest with Break-Even, Trailing SL, and Dynamic Sizing support.
+        Overlapping-positions backtest with Break-Even, Trailing SL, Dynamic Sizing, and Uncertainty Filtering support.
         """
         available_capital = self.initial_capital
         active_positions = []  # list of dicts: {direction, entry_price, entry_capital, entry_time, extreme_price, be_activated, size_multiplier}
+        filtered_count = 0
 
         equity_curve = []
 
@@ -293,6 +308,14 @@ class BacktestEngine:
                 expected_move = (expected_price - current_price) / current_price
 
                 if expected_move > threshold_pct or expected_move < -threshold_pct:
+                    if uncertainty_filter and quant_fc is not None:
+                        q10_price = quant_fc[-1, 0]
+                        q90_price = quant_fc[-1, 8] if quant_fc.shape[1] > 8 else quant_fc[-1, -1]
+                        uncertainty_spread = (q90_price - q10_price) / current_price
+                        if uncertainty_spread > max_uncertainty_pct:
+                            filtered_count += 1
+                            continue
+
                     remaining_slots = max_positions - len(active_positions)
                     alloc_capital = available_capital / remaining_slots
                     alloc_capital_after_fee = alloc_capital * (1 - self.fee_rate)
@@ -366,7 +389,8 @@ class BacktestEngine:
                 'total_return': total_return,
                 'sharpe_ratio': sharpe_ratio,
                 'max_drawdown': max_drawdown,
-                'total_trades': len(self.trades)
+                'total_trades': len(self.trades),
+                'filtered_trades': filtered_count
             }
         }
 
