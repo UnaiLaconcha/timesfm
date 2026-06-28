@@ -9,25 +9,7 @@ class BacktestEngine:
 
     def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0):
         """
-        Runs a walk-forward backtest using TimesFM predictions.
-        df: DataFrame with at least 'close' prices.
-        model_predictor: initialized TimesFMPredictor.
-        stop_loss_pct: 0.02 means 2% initial stop loss.
-        take_profit_pct: 0.04 means 4% take profit. Set to 0 to disable.
-        threshold_pct: 0.01 means 1% expected move to enter trade.
-        step_size: step size for walk-forward evaluation.
-        overlapping: if True, allow multiple simultaneous positions.
-        max_positions: maximum number of simultaneous positions (only used when overlapping=True).
-        trailing_sl: if True, use dynamic Trailing Stop Loss instead of static TP.
-        trailing_sl_pct: distance percentage for trailing stop loss (e.g., 0.02 for 2%).
-        break_even: if True, move stop loss to entry price once trigger profit is reached.
-        break_even_trigger_pct: profit percentage required to trigger Break-Even (e.g., 0.015 for 1.5%).
-        dynamic_sizing: if True, scale position size based on quantile prediction confidence.
-        confidence_multiplier: multiplier factor for high-confidence trades (e.g., 1.5 for 150%).
-        uncertainty_filter: if True, skip entries when prediction quantile spread exceeds max_uncertainty_pct.
-        max_uncertainty_pct: maximum allowed spread between q90 and q10 relative to price (e.g., 0.05 for 5%).
-        adaptive_sl: if True, dynamically scale stop loss percentage based on recent market return volatility stddev.
-        volatility_multiplier: multiplier factor k for stddev volatility SL (e.g., 2.0 for 2*stddev).
+        Runs a walk-forward backtest using TimesFM predictions for a single asset.
         """
         context_len = model_predictor.context_len
         if len(df) < context_len + horizon_len:
@@ -37,6 +19,68 @@ class BacktestEngine:
             return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         else:
             return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+
+    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0):
+        """
+        Runs a multi-asset portfolio backtest. Proportionally divides initial capital among assets,
+        executes strategy per asset, and consolidates global portfolio metrics & equity curve.
+        """
+        if not df_dict:
+            raise ValueError("df_dict is empty. Provide at least one asset DataFrame.")
+
+        num_assets = len(df_dict)
+        asset_initial_cap = self.initial_capital / num_assets
+        
+        asset_results = {}
+        all_trades_list = []
+        total_filtered = 0
+        equity_series_list = []
+
+        for symbol, df_asset in df_dict.items():
+            asset_engine = BacktestEngine(initial_capital=asset_initial_cap, fee_rate=self.fee_rate)
+            res = asset_engine.run_backtest(
+                df_asset, model_predictor, horizon_len=horizon_len, stop_loss_pct=stop_loss_pct,
+                threshold_pct=threshold_pct, step_size=step_size, take_profit_pct=take_profit_pct,
+                overlapping=overlapping, max_positions=max_positions, trailing_sl=trailing_sl,
+                trailing_sl_pct=trailing_sl_pct, break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
+                uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier
+            )
+            
+            # Tag trades with asset symbol
+            trades_df = res['trades'].copy()
+            if not trades_df.empty:
+                trades_df['symbol'] = symbol
+                all_trades_list.append(trades_df)
+                
+            total_filtered += res['metrics'].get('filtered_trades', 0)
+            asset_results[symbol] = res
+            equity_series_list.append(res['equity_df']['equity'].rename(symbol))
+
+        # Combine equity curves across aligned timestamps
+        combined_equity_df = pd.concat(equity_series_list, axis=1).ffill().bfill()
+        portfolio_equity = combined_equity_df.sum(axis=1)
+        portfolio_equity_df = pd.DataFrame({'equity': portfolio_equity})
+
+        # Combined trade log
+        if all_trades_list:
+            combined_trades_df = pd.concat(all_trades_list, ignore_index=True).sort_values('time').reset_index(drop=True)
+        else:
+            combined_trades_df = pd.DataFrame(columns=['time', 'type', 'price', 'capital', 'confidence', 'pnl_pct', 'pnl_usd', 'symbol'])
+
+        # Calculate consolidated portfolio metrics
+        raw_trades_dicts = combined_trades_df.to_dict('records') if not combined_trades_df.empty else []
+        final_portfolio_cap = portfolio_equity.iloc[-1] if not portfolio_equity.empty else self.initial_capital
+        portfolio_metrics = self._calculate_institutional_metrics(portfolio_equity_df, raw_trades_dicts, final_portfolio_cap, step_size, total_filtered)
+
+        return {
+            'equity_df': portfolio_equity_df,
+            'trades': combined_trades_df,
+            'metrics': portfolio_metrics,
+            'asset_results': asset_results,
+            'combined_equity_grid': combined_equity_df
+        }
 
     def _precompute_forecasts(self, df, model_predictor, context_len, horizon_len, step_size):
         """Precompute batch forecasts for ultra-fast walk-forward iteration."""
@@ -436,7 +480,7 @@ class BacktestEngine:
         drawdown = (equity_df['equity'] - cummax) / cummax
         max_drawdown = drawdown.min()
 
-        closed_trades = [t for t in trades_list if 'pnl_usd' in t]
+        closed_trades = [t for t in trades_list if isinstance(t, dict) and 'pnl_usd' in t and pd.notna(t['pnl_usd'])]
         total_closed = len(closed_trades)
         winning_trades = [t for t in closed_trades if t['pnl_usd'] > 0]
         losing_trades = [t for t in closed_trades if t['pnl_usd'] < 0]

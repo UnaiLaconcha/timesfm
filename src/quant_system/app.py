@@ -258,7 +258,7 @@ st.markdown(_CSS, unsafe_allow_html=True)
 st.markdown("""
 <div class="quant-header">
   <h1>📈 TimesFM Quant Dashboard <span class="badge">BACKTESTING</span></h1>
-  <p>Motor de inversión algorítmica · Google TimesFM 2.5 × Binance · Estrategia Long/Short</p>
+  <p>Motor de inversión algorítmica · Google TimesFM 2.5 × Binance · Estrategia Long/Short & Cartera Multi-Activo</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -299,7 +299,9 @@ def _save_strategy(name, params):
 def _apply_strategy_to_session_state(strategy_data):
     """Write strategy values into session_state keys that match widget keys."""
     key_map = {
+        "analysis_mode":          "cfg_analysis_mode",
         "symbol":                 "cfg_symbol",
+        "portfolio_symbols":      "cfg_portfolio_symbols",
         "interval":               "cfg_interval",
         "start_date":             "cfg_start_date",
         "end_date":               "cfg_end_date",
@@ -367,9 +369,25 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 📡 Activo & Datos")
-    col_a1, col_a2 = st.columns(2)
-    symbol = col_a1.text_input("Par Trading", value="BTCUSDT", key="cfg_symbol")
-    interval = col_a2.selectbox("Intervalo", ["1h", "4h", "1d"], key="cfg_interval")
+    analysis_mode = st.radio("Modo de Análisis", ["Activo Único", "Cartera Multi-Activo"], key="cfg_analysis_mode")
+    
+    if analysis_mode == "Activo Único":
+        symbol = st.text_input("Par Trading", value="BTCUSDT", key="cfg_symbol")
+        portfolio_symbols = [symbol]
+    else:
+        portfolio_symbols = st.multiselect(
+            "Pares de la Cartera",
+            ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", "AVAXUSDT", "LINKUSDT"],
+            default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"],
+            key="cfg_portfolio_symbols",
+            help="Selecciona los criptoactivos entre los que se repartirá proporcionalmente el capital."
+        )
+        if not portfolio_symbols:
+            st.warning("⚠️ Selecciona al menos un par de criptoactivos para la cartera.")
+            st.stop()
+        symbol = portfolio_symbols[0]
+
+    interval = st.selectbox("Intervalo Temporal", ["1h", "4h", "1d"], key="cfg_interval")
 
     col_d1, col_d2 = st.columns(2)
     start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
@@ -393,7 +411,7 @@ with st.sidebar:
     threshold_pct = col_r2.number_input("Umbral (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
 
     col_r3, col_r4 = st.columns(2)
-    initial_capital = col_r3.number_input("Capital (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
+    initial_capital = col_r3.number_input("Capital Global ($)", min_value=100, max_value=1000000, value=1000, step=100, key="cfg_initial_capital", help="Capital total de la cartera a repartir entre los activos seleccionados.")
     exit_mode = col_r4.radio(
         "Modo Salida",
         ["Take Profit Fijo", "Trailing Stop Loss (Dinámico)"],
@@ -537,39 +555,61 @@ def render_kpis(metrics, initial_cap, final_eq):
     """, unsafe_allow_html=True)
 
 
-def build_equity_chart(equity_df, df, ctx_len, init_cap):
-    start_price = df['close'].iloc[ctx_len]
-    bnh_equity = init_cap * (df['close'].iloc[ctx_len:] / start_price)
-
+def build_equity_chart(results, df_dict, ctx_len, init_cap):
+    equity_df = results['equity_df']
+    is_portfolio = 'asset_results' in results
+    
     fig = go.Figure()
+    
+    # Portfolio or Single Strategy Main Curve
+    main_name = "Cartera TimesFM (Consolidada)" if is_portfolio else "Estrategia TimesFM (Actual)"
     fig.add_trace(go.Scatter(
         x=equity_df.index, y=equity_df['equity'],
-        name="Estrategia TimesFM (Actual)",
-        line=dict(color="#00FFA3", width=2),
+        name=main_name,
+        line=dict(color="#00FFA3", width=2.5),
         fill='tozeroy',
         fillcolor='rgba(0,255,163,0.06)',
     ))
-    fig.add_trace(go.Scatter(
-        x=bnh_equity.index, y=bnh_equity.values,
-        name="Buy & Hold",
-        line=dict(color="#7C8CF8", width=1.5, dash='dash'),
-    ))
+
+    # Buy & Hold Benchmark
+    if not is_portfolio:
+        sym = list(df_dict.keys())[0]
+        df = df_dict[sym]
+        start_price = df['close'].iloc[ctx_len]
+        bnh_equity = init_cap * (df['close'].iloc[ctx_len:] / start_price)
+        fig.add_trace(go.Scatter(
+            x=bnh_equity.index, y=bnh_equity.values,
+            name="Buy & Hold",
+            line=dict(color="#7C8CF8", width=1.5, dash='dash'),
+        ))
+    else:
+        # Plot breakdown of individual assets in portfolio
+        asset_colors = ["#FFD700", "#00E5FF", "#A855F7", "#FF8C00", "#F7B731", "#E056FD"]
+        for idx, (sym, res_a) in enumerate(results['asset_results'].items()):
+            a_eq = res_a['equity_df']['equity']
+            fig.add_trace(go.Scatter(
+                x=a_eq.index, y=a_eq.values,
+                name=f"Sub-Activo: {sym}",
+                line=dict(color=asset_colors[idx % len(asset_colors)], width=1.2, dash='dot'),
+            ))
 
     # Add benchmark runs from session state
     history = st.session_state.get("backtest_history", [])
-    colors = ["#FFD700", "#00E5FF", "#A855F7", "#FF4560", "#FF8C00"]
-    for idx, run in enumerate(history[-5:]):
+    colors = ["#E2E8F0", "#CBD5E1", "#94A3B8"]
+    for idx, run in enumerate(history[-3:]):
         h_df = run['equity_df']
         label = run['name']
         fig.add_trace(go.Scatter(
             x=h_df.index, y=h_df['equity'],
-            name=f"Prueba {idx+1}: {label}",
-            line=dict(color=colors[idx % len(colors)], width=1.5, dash='dot'),
+            name=f"Historial {idx+1}: {label}",
+            line=dict(color=colors[idx % len(colors)], width=1, dash='dashdot'),
+            visible='legendonly'
         ))
 
+    chart_title = "Evolución del Capital Consolidado de la Cartera" if is_portfolio else "Equity Curve vs. Buy & Hold"
     fig.update_layout(
         **PLOTLY_DARK,
-        title=dict(text="Equity Curve vs. Buy & Hold vs. Historial de Pruebas", font=dict(size=14, color="#E8EAF6")),
+        title=dict(text=chart_title, font=dict(size=14, color="#E8EAF6")),
         yaxis_title="Capital (USD)",
         legend=dict(bgcolor="rgba(0,0,0,0)", x=0.01, y=0.99),
         hovermode="x unified",
@@ -696,7 +736,7 @@ def build_monthly_heatmap(equity_df):
     ))
     fig.update_layout(
         **PLOTLY_DARK,
-        title=dict(text="Retorno Mensual de la Estrategia (%)", font=dict(size=14)),
+        title=dict(text="Retorno Mensual de la Estrategia / Cartera (%)", font=dict(size=14)),
         height=max(200, 80 * len(y) + 80),
     )
     return fig
@@ -716,14 +756,16 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
+def _on_save_clicked(an_mode, sym, port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
-        st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia antes de guardar.")
+        st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia/cartera antes de guardar.")
     else:
         clean_name = name.replace(" ", "_")
         params_to_save = {
+            "analysis_mode": an_mode,
             "symbol": sym,
+            "portfolio_symbols": port_syms,
             "interval": intv,
             "start_date": s_date.isoformat(),
             "end_date": e_date.isoformat(),
@@ -748,7 +790,7 @@ def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex
             "volatility_multiplier": vol_mult,
         }
         _save_strategy(clean_name, params_to_save)
-        st.session_state["save_status"] = ("success", f"✅ Estrategia **{clean_name}** guardada correctamente.")
+        st.session_state["save_status"] = ("success", f"✅ Estrategia/Cartera **{clean_name}** guardada correctamente.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -756,6 +798,7 @@ def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex
 # ─────────────────────────────────────────────────────────────────────────────
 if run_btn:
     # LOAD DATA
+    df_dict = {}
     with st.spinner("📡 Descargando datos históricos de Binance..."):
         try:
             if interval == "1h":
@@ -770,20 +813,21 @@ if run_btn:
             end_str = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
             
             loader = BinanceLoader()
-            df = loader.fetch_historical_data(symbol, interval, start_str, end_str)
+            for s in portfolio_symbols:
+                df_dict[s] = loader.fetch_historical_data(s, interval, start_str, end_str)
         except Exception as e:
             st.error(f"Error al descargar datos de Binance: {e}")
             st.stop()
 
-    n_candles = len(df)
+    min_candles = min(len(df_dict[s]) for s in portfolio_symbols)
     st.markdown('<div class="section-label">✅ DATOS CARGADOS</div>', unsafe_allow_html=True)
     col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("Velas descargadas", n_candles)
-    col_info2.metric("Desde", str(df.index[0].date()))
-    col_info3.metric("Hasta", str(df.index[-1].date()))
+    col_info1.metric("Modo de Análisis", f"{analysis_mode} ({len(portfolio_symbols)} activos)")
+    col_info2.metric("Mín. Velas descargadas", min_candles)
+    col_info3.metric("Rango Fechas", f"{start_date} a {end_date}")
 
-    if n_candles < context_len + horizon_len:
-        st.error(f"⚠️ Se necesitan al menos **{context_len + horizon_len}** velas. Tienes {n_candles}.")
+    if min_candles < context_len + horizon_len:
+        st.error(f"⚠️ Se necesitan al menos **{context_len + horizon_len}** velas. Tienes {min_candles}.")
         st.stop()
 
     # LOAD MODEL
@@ -794,20 +838,32 @@ if run_btn:
             st.error(f"Error al cargar el modelo TimesFM: {e}")
             st.stop()
 
-    # RUN BACKTEST (FAST BATCHING)
+    # RUN BACKTEST (SINGLE OR PORTFOLIO)
     with st.spinner("⚡ Ejecutando simulación ultra-rápida (Batch Inferences)..."):
         try:
             engine = BacktestEngine(initial_capital=float(initial_capital), fee_rate=0.0004)
-            results = engine.run_backtest(
-                df, predictor, horizon_len, stop_loss_pct, threshold_pct,
-                step_size=step_size, take_profit_pct=take_profit_pct,
-                overlapping=overlapping, max_positions=max_positions,
-                trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
-                break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
-                dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
-                uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
-                adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
-            )
+            if analysis_mode == "Activo Único":
+                results = engine.run_backtest(
+                    df_dict[symbol], predictor, horizon_len, stop_loss_pct, threshold_pct,
+                    step_size=step_size, take_profit_pct=take_profit_pct,
+                    overlapping=overlapping, max_positions=max_positions,
+                    trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
+                    break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                    dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
+                    uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                    adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                )
+            else:
+                results = engine.run_portfolio_backtest(
+                    df_dict, predictor, horizon_len, stop_loss_pct, threshold_pct,
+                    step_size=step_size, take_profit_pct=take_profit_pct,
+                    overlapping=overlapping, max_positions=max_positions,
+                    trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
+                    break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                    dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
+                    uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
+                    adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
+                )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
             st.stop()
@@ -818,29 +874,30 @@ if run_btn:
     final_equity = equity_df['equity'].iloc[-1]
 
     # Save run to history for benchmarking
+    run_label = f"Cartera {len(portfolio_symbols)} act." if analysis_mode == "Cartera Multi-Activo" else symbol
     st.session_state["backtest_history"].append({
-        "name": f"{symbol} {interval} ({datetime.datetime.now().strftime('%H:%M:%S')})",
+        "name": f"{run_label} {interval} ({datetime.datetime.now().strftime('%H:%M:%S')})",
         "equity_df": equity_df.copy(),
         "metrics": metrics
     })
 
     # TABS
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Resumen", "🕯️ Gráficos Avanzados",
+        "📊 Resumen de Cartera", "🕯️ Gráficos Avanzados",
         "🌡️ Rentabilidad Mensual", "📋 Operaciones",
     ])
 
     # TAB 1 — RESUMEN
     with tab1:
-        st.markdown('<div class="section-label">MÉTRICAS INSTITUCIONALES</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">MÉTRICAS CONSOLIDADAS DE LA CARTERA</div>', unsafe_allow_html=True)
         render_kpis(metrics, float(initial_capital), final_equity)
 
         # ── Strategy save ──
-        st.markdown('<div class="section-label">💾 GUARDAR ESTRATEGIA</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">💾 GUARDAR ESTRATEGIA / CARTERA</div>', unsafe_allow_html=True)
         save_col1, save_col2 = st.columns([3, 1])
         save_col1.text_input(
-            "Nombre de la Estrategia",
-            placeholder="Ej: BTC_1h_aggresiva_v2",
+            "Nombre de la Estrategia / Cartera",
+            placeholder="Ej: CARTERA_TopCrypto_FullQuant",
             label_visibility="collapsed",
             key="strategy_name_input_key"
         )
@@ -848,7 +905,7 @@ if run_btn:
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            args=(analysis_mode, symbol, portfolio_symbols, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -859,14 +916,24 @@ if run_btn:
             del st.session_state["save_status"]
 
         st.markdown('<div class="section-label">CURVA DE EQUIDAD BENCHMARKING</div>', unsafe_allow_html=True)
-        fig_equity = build_equity_chart(equity_df, df, context_len, float(initial_capital))
+        fig_equity = build_equity_chart(results, df_dict, context_len, float(initial_capital))
         st.plotly_chart(fig_equity, use_container_width=True)
 
     # TAB 2 — GRÁFICOS AVANZADOS
     with tab2:
-        st.markdown('<div class="section-label">VELAS JAPONESAS + SEÑALES + DRAWDOWN + VOLUMEN</div>',
-                    unsafe_allow_html=True)
-        fig_adv = build_advanced_chart(df, trades_df, equity_df)
+        if analysis_mode == "Cartera Multi-Activo":
+            col_adv_sym, _ = st.columns([2, 2])
+            selected_adv_sym = col_adv_sym.selectbox("🔍 Seleccionar Activo de la Cartera para inspeccionar", portfolio_symbols)
+            adv_df = df_dict[selected_adv_sym]
+            adv_trades = results['asset_results'][selected_adv_sym]['trades']
+            adv_equity = results['asset_results'][selected_adv_sym]['equity_df']
+        else:
+            adv_df = df_dict[symbol]
+            adv_trades = trades_df
+            adv_equity = equity_df
+
+        st.markdown('<div class="section-label">VELAS JAPONESAS + SEÑALES + DRAWDOWN + VOLUMEN</div>', unsafe_allow_html=True)
+        fig_adv = build_advanced_chart(adv_df, adv_trades, adv_equity)
         st.plotly_chart(fig_adv, use_container_width=True)
         st.markdown("**Leyenda de señales:**")
         leg_cols = st.columns(5)
@@ -878,8 +945,7 @@ if run_btn:
 
     # TAB 3 — HEATMAP
     with tab3:
-        st.markdown('<div class="section-label">RETORNOS MENSUALES DE LA ESTRATEGIA</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="section-label">RETORNOS MENSUALES DE LA CARTERA</div>', unsafe_allow_html=True)
         fig_heat = build_monthly_heatmap(equity_df)
         if fig_heat is not None:
             st.plotly_chart(fig_heat, use_container_width=True)
@@ -889,18 +955,18 @@ if run_btn:
 
     # TAB 4 — OPERACIONES
     with tab4:
-        st.markdown('<div class="section-label">REGISTRO COMPLETO DE OPERACIONES & EXPORTACIÓN</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="section-label">REGISTRO COMPLETO DE OPERACIONES & EXPORTACIÓN</div>', unsafe_allow_html=True)
         if not trades_df.empty:
             styled_df = style_trades(trades_df)
             st.dataframe(styled_df, use_container_width=True, height=400)
 
             # CSV Download Button
             csv_data = trades_df.to_csv(index=False).encode('utf-8')
+            file_prefix = f"CARTERA_{len(portfolio_symbols)}activos" if analysis_mode == "Cartera Multi-Activo" else symbol
             st.download_button(
                 label="📥 Descargar Registro de Operaciones (CSV)",
                 data=csv_data,
-                file_name=f"{symbol}_{interval}_trades_{datetime.date.today()}.csv",
+                file_name=f"{file_prefix}_{interval}_trades_{datetime.date.today()}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -953,16 +1019,18 @@ if run_btn:
             ds_label   = f"**Activo** ({confidence_multiplier}x en Alta Confianza)" if dynamic_sizing else "**Inactivo**"
             uf_label   = f"**Activo** (Máx. Incertidumbre {max_uncertainty_pct*100:.1f}%)" if uncertainty_filter else "**Inactivo**"
             asl_label  = f"**Activo** ({volatility_multiplier}k·σ adaptativo)" if adaptive_sl else "**Inactivo**"
+            activos_txt = ", ".join(portfolio_symbols) if analysis_mode == "Cartera Multi-Activo" else symbol
             st.markdown(f"""
 ### Modelo: TimesFM 2.5 (Google DeepMind)
 Un modelo fundacional de series temporales univariantes entrenado por Google. Opera en modo **zero-shot**
 (sin reentrenamiento) y genera predicciones probabilísticas (cuantiles q10–q90).
 
-### Lógica de la Estrategia
+### Lógica de la Estrategia / Cartera
 
 | Parámetro | Valor |
 |-----------|-------|
-| Activo | `{symbol}` |
+| Modo Análisis | `{analysis_mode}` |
+| Activo(s) | `{activos_txt}` |
 | Intervalo | `{interval}` |
 | Context Length | `{context_len}` velas |
 | Horizon Length | `{horizon_len}` velas |
@@ -974,7 +1042,7 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Dynamic Confidence Sizing | {ds_label} |
 | Uncertainty Filter | {uf_label} |
 | Umbral entrada | `{threshold_pct*100:.1f}%` |
-| Capital inicial | `${initial_capital:,}` USD |
+| Capital Global | `${initial_capital:,}` USD |
 | Modo de Ejecución | {mode_label} |
 """)
 
@@ -985,7 +1053,7 @@ else:
         <div class="icon">🎯</div>
         <div class="title">Configura los parámetros y ejecuta el backtest</div>
         <div class="desc">
-            Ajusta el activo, el intervalo y los parámetros de riesgo en el panel lateral.<br>
+            Ajusta el activo o los pares de la cartera, el intervalo y los parámetros de riesgo en el panel lateral.<br>
             Pulsa <strong class="accent">🚀 Ejecutar Backtest</strong> cuando estés listo.
         </div>
     </div>

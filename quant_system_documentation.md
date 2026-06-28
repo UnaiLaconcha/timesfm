@@ -137,6 +137,14 @@ El sistema cuenta con una infraestructura de grado institucional optimizada en r
 * **Exportación CSV:** Botón de descarga interactivo en la pestaña de Operaciones para auditoría externa en Excel.
 * **Benchmarking de Estrategias:** Superposición automática en tiempo real de múltiples ejecuciones históricas en la curva de equidad.
 
+### 3.11. Modo Cartera de Inversión Multi-Activo (Portfolio Engine)
+El sistema permite gestionar y evaluar el comportamiento de una **Cartera de Inversión Multi-Activo**:
+* **Reparto Proporcional de Capital:** El usuario define un capital global (ej. $1000 USD), el cual el motor reparte de forma equitativa entre los $N$ criptoactivos seleccionados en el panel lateral ($Capital_i = Capital / N$).
+* **Ejecución Homogénea:** Aplica la misma estrategia predictiva y reglas de riesgo a todos los activos de la cartera durante el mismo periodo temporal.
+* **Consolidación de Métricas:** Genera una curva de equidad global combinada y calcula el Sharpe, Sortino, Drawdown y Win Rate consolidados de la cartera.
+* **Persistencia JSON:** Permite guardar y cargar configuraciones completas de carteras (como `BTC_ETH_XRP_SOL_Portfolio.json`).
+
+
 
 
 
