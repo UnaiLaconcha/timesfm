@@ -104,6 +104,13 @@ El sistema incluye un gestor de configuraciones en formato JSON guardados en la 
 * **Guardar Estrategia:** En la pestaña "📊 Resumen", el usuario puede escribir un nombre y pulsar "💾 Guardar". Esto serializa todos los hiperparámetros actuales (activo, intervalo, fechas, context, horizon, step size, riesgo y modo de ejecución) en un archivo `.json`.
 * **Cargar Estrategia:** En la parte superior del panel lateral izquierdo, el desplegable "Cargar Estrategia Guardada" muestra todos los archivos guardados. Al seleccionar uno, el sistema inyecta los parámetros en `st.session_state` y fuerza un refresco visual (`st.rerun()`), actualizando instantáneamente todos los sliders e inputs del dashboard.
 
+### 3.5. Modo Trailing Stop Loss (Stop Loss Dinámico)
+Como alternativa al Take Profit fijo, el sistema incluye la opción de **Trailing Stop Loss (Dinámico)** para maximizar las ganancias durante tendencias prolongadas a favor de la posición.
+* **Lógica en Posición Long:** El sistema registra de manera continua el precio máximo alcanzado (`peak_price`) desde la apertura. El nivel de Stop Loss se actualiza dinámicamente según la fórmula: `dynamic_sl = max(entry_price * (1 - stop_loss_pct), peak_price * (1 - trailing_sl_pct))`. Si el precio se da la vuelta y cruza este umbral dinámico, la posición se liquida registrándose con el tipo `CLOSE_LONG_TSL`.
+* **Lógica en Posición Short:** El sistema registra de manera continua el precio mínimo alcanzado (`lowest_price`). El nivel de Stop Loss dinámico se actualiza a: `dynamic_sl = min(entry_price * (1 + stop_loss_pct), lowest_price * (1 + trailing_sl_pct))`. Si el precio repunta y toca el nivel dinámico, la posición se liquida con el tipo `CLOSE_SHORT_TSL`.
+* **Integración:** Funciona tanto en ejecuciones de posición única como en operaciones simultáneas (donde cada posición rastrea su propio Trailing SL independiente).
+
+
 ---
 
 ## 4. 🤖 Notas para futuros modelos de IA (Contexto para Mejoras)
