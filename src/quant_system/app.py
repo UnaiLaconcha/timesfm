@@ -386,8 +386,8 @@ with st.sidebar:
         portfolio_symbols = [symbol]
     else:
         preset_options = [
-            "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT",
-            "AVAXUSDT", "SHIBUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "LTCUSDT", "PEPEUSDT",
+            "BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT",
+            "AVAXUSDT", "SHIBUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "PEPEUSDT",
             "FETUSDT", "RENDERUSDT", "SUIUSDT", "APTUSDT", "ATOMUSDT", "ICPUSDT", "BCHUSDT",
             "XLMUSDT", "FILUSDT", "ARBUSDT", "OPUSDT", "WIFUSDT", "FLOKIUSDT", "TIAUSDT",
             "INJUSDT", "RUNEUSDT", "FTMUSDT", "GALAUSDT", "SANDUSDT", "MANAUSDT", "ALGOUSDT"
@@ -395,7 +395,7 @@ with st.sidebar:
         selected_preset = st.multiselect(
             "Seleccionar Criptomonedas Destacadas",
             preset_options,
-            default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"],
+            default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT"],
             key="cfg_portfolio_symbols",
             help="Selecciona criptoactivos de la lista rápida."
         )

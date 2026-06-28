@@ -1,0 +1,33 @@
+{
+  "analysis_mode": "Cartera Multi-Activo",
+  "symbol": "BTCUSDT",
+  "portfolio_symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "LTCUSDT"
+  ],
+  "custom_portfolio_symbols": "",
+  "interval": "1d",
+  "start_date": "2026-01-01",
+  "end_date": "2026-06-27",
+  "context_len": 512,
+  "horizon_len": 24,
+  "step_size": 1,
+  "stop_loss_pct": 2.0,
+  "exit_mode": "Take Profit Fijo",
+  "take_profit_pct": 4.0,
+  "trailing_sl_pct": 2.0,
+  "break_even": false,
+  "break_even_trigger_pct": 1.5,
+  "threshold_pct": 1.0,
+  "initial_capital": 1000.0,
+  "overlapping": false,
+  "max_positions": 1,
+  "dynamic_sizing": false,
+  "confidence_multiplier": 1.5,
+  "uncertainty_filter": false,
+  "max_uncertainty_pct": 5.0,
+  "adaptive_sl": false,
+  "volatility_multiplier": 2.0
+}
