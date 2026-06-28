@@ -115,6 +115,12 @@ El sistema permite activar la función **Break-Even**, la cual protege la cuenta
 * **Activación y Ejecución:** En cada vela, si una posición alcanza el porcentaje de ganancia especificado (ej. +1.5%), el Stop Loss de esa operación se actualiza automáticamente a `entry_price`. Si el mercado se da la vuelta y retrocede, la operación se liquida en el punto de entrada registrándose con el tipo `CLOSE_LONG_BE` o `CLOSE_SHORT_BE`, garantizando que la operación termine con cero pérdidas netas.
 * **Combinabilidad:** Puede utilizarse de forma independiente con Take Profit Fijo o combinarse dinámicamente con Trailing Stop Loss.
 
+### 3.7. Dimensionamiento Dinámico por Confianza (Quantile Sizing)
+El sistema incluye la función **Dynamic Confidence Sizing**, la cual ajusta dinámicamente el tamaño del capital de cada posición basándose en los cuantiles probabilísticos de TimesFM 2.5 ($q_{10}$ a $q_{90}$).
+* **Evaluación Cuantitativa:** Al evaluar una entrada en Long, se analiza el cuantil pesimista $q_{10}$. Si $q_{10} > \text{precio\_actual}$ (incluso en el escenario pesimista el modelo predice beneficio), se clasifica como una operación de `Alta Confianza` y se multiplica el capital asignado por el factor `confidence_multiplier` (ej. 1.5x o 2.0x). En Short, se evalúa si $q_{90} < \text{precio\_actual}$.
+* **Registro:** Las operaciones ejecutadas bajo esta condición se registran con la etiqueta de confianza `High` en el libro de órdenes.
+
+
 
 
 ---

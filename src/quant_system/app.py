@@ -202,6 +202,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
 }
 .trade-stats .stat-value.green  { color: #00FFA3; }
 .trade-stats .stat-value.gold   { color: #FFD700; }
+.trade-stats .stat-value.cyan   { color: #00E5FF; }
 .trade-stats .stat-value.red    { color: #FF4560; }
 .trade-stats .stat-value.white  { color: #FFF; }
 </style>
@@ -272,6 +273,8 @@ def _apply_strategy_to_session_state(strategy_data):
         "initial_capital":        "cfg_initial_capital",
         "overlapping":            "cfg_overlapping",
         "max_positions":          "cfg_max_positions",
+        "dynamic_sizing":         "cfg_dynamic_sizing",
+        "confidence_multiplier":  "cfg_confidence_multiplier",
     }
     for json_key, widget_key in key_map.items():
         if json_key in strategy_data:
@@ -371,6 +374,23 @@ with st.sidebar:
 
     threshold_pct = st.number_input("Umbral de Entrada (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
     initial_capital = st.number_input("Capital Inicial (USD)", min_value=100, max_value=100000, value=1000, step=100, key="cfg_initial_capital")
+
+    st.markdown("### 💎 Dimensionamiento de Posición")
+    dynamic_sizing = st.checkbox(
+        "Dimensionamiento por Confianza",
+        value=False,
+        key="cfg_dynamic_sizing",
+        help="Escala el tamaño de la posición cuando el cuantil pesimista de TimesFM respalda la dirección."
+    )
+    if dynamic_sizing:
+        confidence_multiplier = st.slider(
+            "Multiplicador Alta Confianza",
+            1.1, 3.0, 1.5, 0.1,
+            key="cfg_confidence_multiplier",
+            help="Factor de capital asignado cuando el modelo muestra máxima confianza en los cuantiles."
+        )
+    else:
+        confidence_multiplier = 1.5
 
     st.markdown("### ⚡ Modo de Ejecución")
     overlapping = st.checkbox("Operaciones Simultáneas", value=True, key="cfg_overlapping",
@@ -605,7 +625,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos):
+def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia antes de guardar.")
@@ -629,6 +649,8 @@ def _on_save_clicked(sym, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex
             "initial_capital": init_cap,
             "overlapping": overl,
             "max_positions": max_pos,
+            "dynamic_sizing": dyn_size,
+            "confidence_multiplier": conf_mult,
         }
         _save_strategy(clean_name, params_to_save)
         st.session_state["save_status"] = ("success", f"✅ Estrategia **{clean_name}** guardada correctamente.")
@@ -687,6 +709,7 @@ if run_btn:
                 overlapping=overlapping, max_positions=max_positions,
                 trailing_sl=trailing_sl, trailing_sl_pct=trailing_sl_pct,
                 break_even=break_even, break_even_trigger_pct=break_even_trigger_pct,
+                dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
             )
         except Exception as e:
             st.error(f"Error en el backtesting: {e}")
@@ -721,7 +744,7 @@ if run_btn:
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions)
+            args=(symbol, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -792,11 +815,15 @@ if run_btn:
             n_close   = len(trades_df[trades_df['type'].isin(close_types)])
             n_entries = len(trades_df[trades_df['type'].isin(entry_types)])
 
+            n_high_conf = len(trades_df[trades_df.get('confidence', '') == 'High']) if 'confidence' in trades_df.columns else 0
+
             if n_entries > 0:
                 st.markdown(f"""
                 <div class="trade-stats">
                   <div><span class="stat-label">ENTRADAS</span><br>
                        <span class="stat-value white">{n_entries}</span></div>
+                  <div><span class="stat-label">ALTA CONFIANZA</span><br>
+                       <span class="stat-value cyan">{n_high_conf}</span></div>
                   <div><span class="stat-label">CIERRES NORMALES</span><br>
                        <span class="stat-value green">{n_close}</span></div>
                   <div><span class="stat-label">TAKE PROFIT</span><br>
@@ -817,6 +844,7 @@ if run_btn:
             mode_label = f"**Simultáneo** (máx. {max_positions} posiciones)" if overlapping else "**Secuencial** (1 posición a la vez)"
             exit_label = f"**Trailing Stop Loss** ({trailing_sl_pct*100:.1f}% distancia)" if trailing_sl else f"**Take Profit Fijo** ({take_profit_pct*100:.1f}%)"
             be_label   = f"**Activo** (Gatillo {break_even_trigger_pct*100:.1f}%)" if break_even else "**Inactivo**"
+            ds_label   = f"**Activo** ({confidence_multiplier}x en Alta Confianza)" if dynamic_sizing else "**Inactivo**"
             st.markdown(f"""
 ### Modelo: TimesFM 2.5 (Google DeepMind)
 Un modelo fundacional de series temporales univariantes entrenado por Google. Opera en modo **zero-shot**
@@ -834,6 +862,7 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Stop-Loss Inicial | `{stop_loss_pct*100:.1f}%` |
 | Modo Salida | {exit_label} |
 | Break-Even Protection | {be_label} |
+| Dynamic Confidence Sizing | {ds_label} |
 | Umbral entrada | `{threshold_pct*100:.1f}%` |
 | Capital inicial | `${initial_capital:,}` USD |
 | Modo de Ejecución | {mode_label} |
