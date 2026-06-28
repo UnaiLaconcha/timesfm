@@ -38,11 +38,11 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 _CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Noto+Color+Emoji&display=swap');
 
 /* Global */
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
+html, body, [class*="css"], [data-testid="stMarkdownContainer"] {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 }
 .stApp {
     background: #0A0E1A;
@@ -266,7 +266,7 @@ st.markdown(_CSS, unsafe_allow_html=True)
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="quant-header">
-  <h1>📈 TimesFM Quant Dashboard <span class="badge">BACKTESTING</span></h1>
+  <h1>TimesFM Quant Dashboard <span class="badge">BACKTESTING</span></h1>
   <p>Motor de inversión algorítmica · Google TimesFM 2.5 × Binance · Estrategia Long/Short & Cartera Multi-Activo</p>
 </div>
 """, unsafe_allow_html=True)
@@ -360,10 +360,10 @@ if "backtest_history" not in st.session_state:
 # SIDEBAR (COMPACT & OPTIMIZED LAYOUT)
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚙️ Configuración")
+    st.markdown("## Configuración")
 
     # ── Strategy loader ──
-    st.markdown("### 📂 Estrategia Guardada")
+    st.markdown("### Estrategia Guardada")
     saved_names = _list_saved_strategies()
     strategy_options = ["Ninguna"] + saved_names
 
@@ -380,7 +380,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 📡 Activo, Cartera & Mercado")
+    st.markdown("### Activo, Cartera & Mercado")
     col_m1, col_m2 = st.columns(2)
     analysis_mode = col_m1.radio("Modo Análisis", ["Activo Único", "Cartera Multi-Activo"], key="cfg_analysis_mode")
     quote_asset = col_m2.selectbox("Moneda Cotización", ["USDT", "USDC"], index=0, key="cfg_quote_asset", help="Selecciona si deseas operar mercados en USDT o USDC.")
@@ -442,7 +442,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 🧠 Modelo TimesFM")
+    st.markdown("### Modelo TimesFM")
     context_len = st.slider("Context Length (velas)", 128, 1024, 512, 128,
                              help="Número de velas históricas que recibe el modelo como contexto.",
                              key="cfg_context_len")
@@ -452,7 +452,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 🛡️ Gestión de Riesgo & Salida")
+    st.markdown("### Gestión de Riesgo & Salida")
     col_r1, col_r2 = st.columns(2)
     stop_loss_pct = col_r1.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
     threshold_pct = col_r2.number_input("Umbral (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
@@ -474,7 +474,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 🔬 Optimizaciones Avanzadas")
+    st.markdown("### Optimizaciones Avanzadas")
     col_c1, col_c2 = st.columns(2)
     adaptive_sl = col_c1.checkbox("SL Adaptativo", value=False, key="cfg_adaptive_sl")
     break_even = col_c2.checkbox("Break-Even", value=False, key="cfg_break_even")
@@ -505,7 +505,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### ⚡ Modo de Ejecución")
+    st.markdown("### Modo de Ejecución")
     overlapping = st.checkbox("Operaciones Simultáneas", value=True, key="cfg_overlapping")
     if overlapping:
         max_positions = st.slider("Máx. Posiciones Simultáneas", 2, 10, 5, 1, key="cfg_max_positions")
@@ -513,7 +513,7 @@ with st.sidebar:
         max_positions = 1
 
     st.markdown("---")
-    run_btn = st.button("🚀 Ejecutar Backtest", use_container_width=True, type="primary")
+    run_btn = st.button("Ejecutar Backtest", use_container_width=True, type="primary")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLOTLY DARK THEME
@@ -980,7 +980,7 @@ if st.session_state.get("active_has_run"):
     metrics      = results['metrics']
     final_equity = equity_df['equity'].iloc[-1]
 
-    st.markdown('<div class="section-label">✅ DATOS CARGADOS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">DATOS CARGADOS</div>', unsafe_allow_html=True)
     col_info1, col_info2, col_info3, col_info4 = st.columns(4)
     col_info1.metric("Modo & Mercado", f"{analysis_mode} ({quote_asset})")
     col_info2.metric("Dirección Permitida", trade_direction)
@@ -989,8 +989,8 @@ if st.session_state.get("active_has_run"):
 
     # TABS
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Resumen de Cartera", "🕯️ Gráficos Avanzados",
-        "🌡️ Rentabilidad Mensual", "📋 Operaciones",
+        "Resumen de Cartera", "Gráficos Avanzados",
+        "Rentabilidad Mensual", "Operaciones",
     ])
 
     # TAB 1 — RESUMEN
@@ -999,7 +999,7 @@ if st.session_state.get("active_has_run"):
         render_kpis(metrics, float(initial_capital), final_equity)
 
         # ── Strategy save ──
-        st.markdown('<div class="section-label">💾 GUARDAR ESTRATEGIA / CARTERA</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">GUARDAR ESTRATEGIA / CARTERA</div>', unsafe_allow_html=True)
         save_col1, save_col2 = st.columns([3, 1])
         save_col1.text_input(
             "Nombre de la Estrategia / Cartera",
@@ -1009,7 +1009,7 @@ if st.session_state.get("active_has_run"):
         )
         custom_port_str = st.session_state.get("cfg_custom_portfolio_symbols", "")
         save_col2.button(
-            "💾 Guardar",
+            "Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
             args=(analysis_mode, quote_asset, trade_direction, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
@@ -1030,7 +1030,7 @@ if st.session_state.get("active_has_run"):
     with tab2:
         if analysis_mode == "Cartera Multi-Activo":
             col_adv_sym, _ = st.columns([2, 2])
-            selected_adv_sym = col_adv_sym.selectbox("🔍 Seleccionar Activo de la Cartera para inspeccionar", portfolio_symbols, key="adv_tab_selected_symbol")
+            selected_adv_sym = col_adv_sym.selectbox("Seleccionar Activo de la Cartera para inspeccionar", portfolio_symbols, key="adv_tab_selected_symbol")
             adv_df = df_dict[selected_adv_sym]
             adv_trades = results['asset_results'][selected_adv_sym]['trades']
             adv_equity = results['asset_results'][selected_adv_sym]['equity_df']
@@ -1044,11 +1044,11 @@ if st.session_state.get("active_has_run"):
         st.plotly_chart(fig_adv, use_container_width=True)
         st.markdown("**Leyenda de señales:**")
         leg_cols = st.columns(5)
-        leg_cols[0].markdown("🟢 **▲ ENTER LONG**")
-        leg_cols[1].markdown("🔴 **▼ ENTER SHORT**")
-        leg_cols[2].markdown("🟠 **✕ STOP LOSS**")
-        leg_cols[3].markdown("🟡 **◆ BREAK-EVEN**")
-        leg_cols[4].markdown("🔵 **⭐ TRAILING SL**")
+        leg_cols[0].markdown("▲ **ENTER LONG**")
+        leg_cols[1].markdown("▼ **ENTER SHORT**")
+        leg_cols[2].markdown("✕ **STOP LOSS**")
+        leg_cols[3].markdown("◆ **BREAK-EVEN**")
+        leg_cols[4].markdown("★ **TRAILING SL**")
 
     # TAB 3 — HEATMAP
     with tab3:
@@ -1071,7 +1071,7 @@ if st.session_state.get("active_has_run"):
             csv_data = trades_df.to_csv(index=False).encode('utf-8')
             file_prefix = f"CARTERA_{len(portfolio_symbols)}activos" if analysis_mode == "Cartera Multi-Activo" else symbol
             st.download_button(
-                label="📥 Descargar Registro de Operaciones (CSV)",
+                label="Descargar Registro de Operaciones (CSV)",
                 data=csv_data,
                 file_name=f"{file_prefix}_{interval}_trades_{datetime.date.today()}.csv",
                 mime="text/csv",
@@ -1119,7 +1119,7 @@ if st.session_state.get("active_has_run"):
             st.info("No se ejecutó ninguna operación en el periodo analizado.")
 
         st.markdown("---")
-        with st.expander("📖 Estrategia Aplicada — Descripción Completa"):
+        with st.expander("Estrategia Aplicada — Descripción Completa"):
             mode_label = f"**Simultáneo** (máx. {max_positions} posiciones)" if overlapping else "**Secuencial** (1 posición a la vez)"
             exit_label = f"**Trailing Stop Loss** ({trailing_sl_pct*100:.1f}% distancia)" if trailing_sl else f"**Take Profit Fijo** ({take_profit_pct*100:.1f}%)"
             be_label   = f"**Activo** (Gatillo {break_even_trigger_pct*100:.1f}%)" if break_even else "**Inactivo**"
@@ -1159,11 +1159,10 @@ else:
     # EMPTY STATE
     st.markdown("""
     <div class="empty-state">
-        <div class="icon">🎯</div>
         <div class="title">Configura los parámetros y ejecuta el backtest</div>
         <div class="desc">
             Ajusta el activo o los pares de la cartera, el intervalo y los parámetros de riesgo en el panel lateral.<br>
-            Pulsa <strong class="accent">🚀 Ejecutar Backtest</strong> cuando estés listo.
+            Pulsa <strong class="accent">Ejecutar Backtest</strong> cuando estés listo.
         </div>
     </div>
     """, unsafe_allow_html=True)
