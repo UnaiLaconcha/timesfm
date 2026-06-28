@@ -302,6 +302,7 @@ def _apply_strategy_to_session_state(strategy_data):
         "analysis_mode":          "cfg_analysis_mode",
         "symbol":                 "cfg_symbol",
         "portfolio_symbols":      "cfg_portfolio_symbols",
+        "custom_portfolio_symbols": "cfg_custom_portfolio_symbols",
         "interval":               "cfg_interval",
         "start_date":             "cfg_start_date",
         "end_date":               "cfg_end_date",
@@ -368,26 +369,53 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.markdown("### 📡 Activo & Datos")
+    st.markdown("### 📡 Activo, Cartera & Capital")
     analysis_mode = st.radio("Modo de Análisis", ["Activo Único", "Cartera Multi-Activo"], key="cfg_analysis_mode")
     
+    col_cap1, col_cap2 = st.columns(2)
+    initial_capital = col_cap1.number_input(
+        "Capital Total ($)",
+        min_value=10.0, max_value=10000000.0, value=1000.0, step=100.0,
+        key="cfg_initial_capital",
+        help="Monto total en dólares a invertir en el activo único o a repartir proporcionalmente entre la cartera."
+    )
+    interval = col_cap2.selectbox("Intervalo", ["1h", "4h", "1d"], key="cfg_interval")
+
     if analysis_mode == "Activo Único":
-        symbol = st.text_input("Par Trading", value="BTCUSDT", key="cfg_symbol")
+        symbol = st.text_input("Par Trading (ej. BTCUSDT, ETHUSDT, PEPEUSDT)", value="BTCUSDT", key="cfg_symbol", help="Escribe cualquier par de Binance.").strip().upper()
         portfolio_symbols = [symbol]
     else:
-        portfolio_symbols = st.multiselect(
-            "Pares de la Cartera",
-            ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "BNBUSDT", "AVAXUSDT", "LINKUSDT"],
+        preset_options = [
+            "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT",
+            "AVAXUSDT", "SHIBUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "LTCUSDT", "PEPEUSDT",
+            "FETUSDT", "RENDERUSDT", "SUIUSDT", "APTUSDT", "ATOMUSDT", "ICPUSDT", "BCHUSDT",
+            "XLMUSDT", "FILUSDT", "ARBUSDT", "OPUSDT", "WIFUSDT", "FLOKIUSDT", "TIAUSDT",
+            "INJUSDT", "RUNEUSDT", "FTMUSDT", "GALAUSDT", "SANDUSDT", "MANAUSDT", "ALGOUSDT"
+        ]
+        selected_preset = st.multiselect(
+            "Seleccionar Criptomonedas Destacadas",
+            preset_options,
             default=["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"],
             key="cfg_portfolio_symbols",
-            help="Selecciona los criptoactivos entre los que se repartirá proporcionalmente el capital."
+            help="Selecciona criptoactivos de la lista rápida."
         )
+        custom_input = st.text_input(
+            "Añadir criptomonedas personalizadas (comas)",
+            placeholder="Ej: PNUTUSDT, BONKUSDT, RENDERUSDT",
+            key="cfg_custom_portfolio_symbols",
+            help="Escribe cualquier criptomoneda adicional de Binance separada por comas."
+        )
+        custom_list = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
+        
+        portfolio_symbols = []
+        for s in selected_preset + custom_list:
+            if s not in portfolio_symbols:
+                portfolio_symbols.append(s)
+
         if not portfolio_symbols:
-            st.warning("⚠️ Selecciona al menos un par de criptoactivos para la cartera.")
+            st.warning("⚠️ Selecciona o escribe al menos un par para la cartera.")
             st.stop()
         symbol = portfolio_symbols[0]
-
-    interval = st.selectbox("Intervalo Temporal", ["1h", "4h", "1d"], key="cfg_interval")
 
     col_d1, col_d2 = st.columns(2)
     start_date = col_d1.date_input("Fecha Inicio", value=datetime.date(2026, 1, 1), key="cfg_start_date")
@@ -410,9 +438,7 @@ with st.sidebar:
     stop_loss_pct = col_r1.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
     threshold_pct = col_r2.number_input("Umbral (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
 
-    col_r3, col_r4 = st.columns(2)
-    initial_capital = col_r3.number_input("Capital Global ($)", min_value=100, max_value=1000000, value=1000, step=100, key="cfg_initial_capital", help="Capital total de la cartera a repartir entre los activos seleccionados.")
-    exit_mode = col_r4.radio(
+    exit_mode = st.radio(
         "Modo Salida",
         ["Take Profit Fijo", "Trailing Stop Loss (Dinámico)"],
         key="cfg_exit_mode"
@@ -584,7 +610,7 @@ def build_equity_chart(results, df_dict, ctx_len, init_cap):
         ))
     else:
         # Plot breakdown of individual assets in portfolio
-        asset_colors = ["#FFD700", "#00E5FF", "#A855F7", "#FF8C00", "#F7B731", "#E056FD"]
+        asset_colors = ["#FFD700", "#00E5FF", "#A855F7", "#FF8C00", "#F7B731", "#E056FD", "#00FFA3", "#FF4560"]
         for idx, (sym, res_a) in enumerate(results['asset_results'].items()):
             a_eq = res_a['equity_df']['equity']
             fig.add_trace(go.Scatter(
@@ -756,7 +782,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(an_mode, sym, port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
+def _on_save_clicked(an_mode, sym, port_syms, custom_port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia/cartera antes de guardar.")
@@ -766,6 +792,7 @@ def _on_save_clicked(an_mode, sym, port_syms, intv, s_date, e_date, c_len, h_len
             "analysis_mode": an_mode,
             "symbol": sym,
             "portfolio_symbols": port_syms,
+            "custom_portfolio_symbols": custom_port_syms,
             "interval": intv,
             "start_date": s_date.isoformat(),
             "end_date": e_date.isoformat(),
@@ -824,7 +851,7 @@ if run_btn:
     col_info1, col_info2, col_info3 = st.columns(3)
     col_info1.metric("Modo de Análisis", f"{analysis_mode} ({len(portfolio_symbols)} activos)")
     col_info2.metric("Mín. Velas descargadas", min_candles)
-    col_info3.metric("Rango Fechas", f"{start_date} a {end_date}")
+    col_info3.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
 
     if min_candles < context_len + horizon_len:
         st.error(f"⚠️ Se necesitan al menos **{context_len + horizon_len}** velas. Tienes {min_candles}.")
@@ -901,11 +928,12 @@ if run_btn:
             label_visibility="collapsed",
             key="strategy_name_input_key"
         )
+        custom_port_str = st.session_state.get("cfg_custom_portfolio_symbols", "")
         save_col2.button(
             "💾 Guardar",
             use_container_width=True,
             on_click=_on_save_clicked,
-            args=(analysis_mode, symbol, portfolio_symbols, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            args=(analysis_mode, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
