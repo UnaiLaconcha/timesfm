@@ -311,6 +311,8 @@ def _apply_strategy_to_session_state(strategy_data):
         "analysis_mode":          "cfg_analysis_mode",
         "quote_asset":            "cfg_quote_asset",
         "trade_direction":        "cfg_trade_direction",
+        "portfolio_allocation_mode": "cfg_portfolio_allocation_mode",
+        "signal_mode":            "cfg_signal_mode",
         "symbol":                 "cfg_symbol",
         "portfolio_symbols":      "cfg_portfolio_symbols",
         "custom_portfolio_symbols": "cfg_custom_portfolio_symbols",
@@ -321,6 +323,8 @@ def _apply_strategy_to_session_state(strategy_data):
         "horizon_len":            "cfg_horizon_len",
         "step_size":              "cfg_step_size",
         "stop_loss_pct":          "cfg_stop_loss_pct",
+        "slippage_pct":           "cfg_slippage_pct",
+        "funding_rate_pct":       "cfg_funding_rate_pct",
         "exit_mode":              "cfg_exit_mode",
         "take_profit_pct":        "cfg_take_profit_pct",
         "trailing_sl_pct":        "cfg_trailing_sl_pct",
@@ -391,6 +395,11 @@ with st.sidebar:
     all_intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
     interval = col_d2.selectbox("Intervalo", all_intervals, index=all_intervals.index("1d") if "1d" in all_intervals else 5, key="cfg_interval")
 
+    if analysis_mode == "Cartera Multi-Activo":
+        portfolio_allocation_mode = st.selectbox("Asignación Cartera", ["Equitativa (1/N)", "Paridad de Riesgo (Risk Parity)"], index=0, key="cfg_portfolio_allocation_mode", help="Equitativa o ponderada por la inversa de la volatilidad histórica (Risk Parity).")
+    else:
+        portfolio_allocation_mode = "Equitativa (1/N)"
+
     col_cap1, col_cap2 = st.columns(2)
     initial_capital = col_cap1.number_input(
         "Capital Total ($)",
@@ -449,6 +458,7 @@ with st.sidebar:
     col_m1, col_m2 = st.columns(2)
     horizon_len = col_m1.slider("Horizonte", 1, 96, 24, 1, key="cfg_horizon_len")
     step_size = col_m2.slider("Paso Eval.", 1, 24, 6, 1, key="cfg_step_size")
+    signal_mode = st.selectbox("Evaluación Señal", ["Punto Final", "Trayectoria AUC"], index=0, key="cfg_signal_mode", help="Evalúa el cambio en el punto final del horizonte o promediando la trayectoria AUC proyectada.")
 
     st.markdown("---")
 
@@ -456,6 +466,10 @@ with st.sidebar:
     col_r1, col_r2 = st.columns(2)
     stop_loss_pct = col_r1.number_input("Stop Loss (%)", min_value=0.5, max_value=15.0, value=2.0, step=0.5, key="cfg_stop_loss_pct") / 100.0
     threshold_pct = col_r2.number_input("Umbral (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key="cfg_threshold_pct") / 100.0
+
+    col_f1, col_f2 = st.columns(2)
+    slippage_pct = col_f1.number_input("Slippage (%)", min_value=0.0, max_value=5.0, value=0.0, step=0.05, key="cfg_slippage_pct") / 100.0
+    funding_rate_pct = col_f2.number_input("Funding Rate (%)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="cfg_funding_rate_pct") / 100.0
 
     exit_mode = st.radio(
         "Modo Salida",
@@ -513,7 +527,7 @@ with st.sidebar:
         max_positions = 1
 
     st.markdown("---")
-    run_btn = st.button("Ejecutar Backtest", use_container_width=True, type="primary")
+    run_btn = st.button("Ejecutar Backtest", width="stretch", type="primary")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLOTLY DARK THEME
@@ -787,6 +801,59 @@ def build_monthly_heatmap(equity_df):
     return fig
 
 
+def build_monte_carlo_chart(trades_df, initial_capital, num_simulations=1000):
+    """Generates 1,000 Monte Carlo stress trajectories by bootstrapping trade returns."""
+    if trades_df.empty or 'pnl_pct' not in trades_df.columns:
+        return None, {}
+    pnl_series = trades_df['pnl_pct'].dropna().values
+    if len(pnl_series) < 2:
+        return None, {}
+    
+    num_trades = len(pnl_series)
+    np.random.seed(42)
+    sim_returns = np.random.choice(pnl_series, size=(num_simulations, num_trades), replace=True)
+    cum_factors = np.cumprod(1.0 + sim_returns, axis=1)
+    sim_paths = float(initial_capital) * np.column_stack([np.ones(num_simulations), cum_factors])
+    
+    p5 = np.percentile(sim_paths, 5, axis=0)
+    p25 = np.percentile(sim_paths, 25, axis=0)
+    p50 = np.percentile(sim_paths, 50, axis=0)
+    p75 = np.percentile(sim_paths, 75, axis=0)
+    p95 = np.percentile(sim_paths, 95, axis=0)
+    
+    final_capitals = sim_paths[:, -1]
+    total_returns = (final_capitals - float(initial_capital)) / float(initial_capital)
+    
+    var_95 = -np.percentile(total_returns, 5)
+    var_99 = -np.percentile(total_returns, 1)
+    cvar_95 = -np.mean(total_returns[total_returns <= np.percentile(total_returns, 5)])
+    ruin_prob = np.mean(final_capitals < float(initial_capital) * 0.5) * 100.0
+    
+    fig = go.Figure()
+    trade_steps = list(range(num_trades + 1))
+    
+    fig.add_trace(go.Scatter(x=trade_steps, y=p95, mode='lines', line=dict(color='rgba(0, 255, 163, 0.3)', width=1), name='Percentil 95%'))
+    fig.add_trace(go.Scatter(x=trade_steps, y=p75, mode='lines', line=dict(color='rgba(0, 229, 255, 0.5)', width=1.5), fill='tonexty', fillcolor='rgba(0, 255, 163, 0.08)', name='Percentil 75%'))
+    fig.add_trace(go.Scatter(x=trade_steps, y=p50, mode='lines', line=dict(color='#00FFA3', width=2.5), name='Mediana (50%)'))
+    fig.add_trace(go.Scatter(x=trade_steps, y=p25, mode='lines', line=dict(color='rgba(255, 215, 0, 0.5)', width=1.5), fill='tonexty', fillcolor='rgba(255, 215, 0, 0.08)', name='Percentil 25%'))
+    fig.add_trace(go.Scatter(x=trade_steps, y=p5, mode='lines', line=dict(color='rgba(255, 69, 96, 0.5)', width=1), fill='tonexty', fillcolor='rgba(255, 69, 96, 0.08)', name='Percentil 5%'))
+    
+    fig.update_layout(
+        title="Simulación de Monte Carlo (1,000 Trayectorias de Estrés por Bootstrapping)",
+        xaxis_title="Número de Operaciones Ejecutadas",
+        yaxis_title="Capital Simulado ($ USD)",
+        **PLOTLY_DARK
+    )
+    
+    mc_metrics = {
+        'var_95': max(0.0, float(var_95)),
+        'var_99': max(0.0, float(var_99)),
+        'cvar_95': max(0.0, float(cvar_95)),
+        'ruin_prob': float(ruin_prob)
+    }
+    return fig, mc_metrics
+
+
 def style_trades(df):
     """Format trades for display without pandas Styler (avoids jinja2 dependency)."""
     display_df = df.copy()
@@ -801,7 +868,7 @@ def style_trades(df):
     return display_df
 
 
-def _on_save_clicked(an_mode, q_asset, t_dir, sym, port_syms, custom_port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
+def _on_save_clicked(an_mode, q_asset, t_dir, port_alloc_mode, sig_mode, sym, port_syms, custom_port_syms, intv, s_date, e_date, c_len, h_len, s_size, sl_pct, slip_pct, fund_pct, ex_mode, tp_pct, tsl_pct, be, be_trig, th_pct, init_cap, overl, max_pos, dyn_size, conf_mult, uncert_filt, max_uncert, adapt_sl, vol_mult):
     name = st.session_state.get("strategy_name_input_key", "").strip()
     if not name:
         st.session_state["save_status"] = ("warning", "⚠️ Escribe un nombre para la estrategia/cartera antes de guardar.")
@@ -811,6 +878,8 @@ def _on_save_clicked(an_mode, q_asset, t_dir, sym, port_syms, custom_port_syms, 
             "analysis_mode": an_mode,
             "quote_asset": q_asset,
             "trade_direction": t_dir,
+            "portfolio_allocation_mode": port_alloc_mode,
+            "signal_mode": sig_mode,
             "symbol": sym,
             "portfolio_symbols": port_syms,
             "custom_portfolio_symbols": custom_port_syms,
@@ -821,6 +890,8 @@ def _on_save_clicked(an_mode, q_asset, t_dir, sym, port_syms, custom_port_syms, 
             "horizon_len": h_len,
             "step_size": s_size,
             "stop_loss_pct": sl_pct * 100,
+            "slippage_pct": slip_pct * 100,
+            "funding_rate_pct": fund_pct * 100,
             "exit_mode": ex_mode,
             "take_profit_pct": tp_pct * 100,
             "trailing_sl_pct": tsl_pct * 100,
@@ -914,7 +985,8 @@ if run_btn:
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
                 adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
-                trade_direction=trade_direction, progress_callback=on_backtest_progress, symbol_name=symbol
+                trade_direction=trade_direction, progress_callback=on_backtest_progress, symbol_name=symbol,
+                slippage_pct=slippage_pct, funding_rate_pct=funding_rate_pct, signal_mode=signal_mode
             )
         else:
             results = engine.run_portfolio_backtest(
@@ -926,7 +998,9 @@ if run_btn:
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
                 adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier,
-                trade_direction=trade_direction, progress_callback=on_backtest_progress
+                trade_direction=trade_direction, progress_callback=on_backtest_progress,
+                slippage_pct=slippage_pct, funding_rate_pct=funding_rate_pct, signal_mode=signal_mode,
+                portfolio_allocation_mode=portfolio_allocation_mode
             )
         progress_bar.progress(100, text="🎉 ¡Simulación y optimización completadas exitosamente!")
     except Exception as e:
@@ -988,9 +1062,9 @@ if st.session_state.get("active_has_run"):
     col_info4.metric("Capital Inicial", f"${initial_capital:,.2f} USD")
 
     # TABS
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Resumen de Cartera", "Gráficos Avanzados",
-        "Rentabilidad Mensual", "Operaciones",
+        "Rentabilidad Mensual", "Operaciones", "Análisis Monte Carlo & Estrés"
     ])
 
     # TAB 1 — RESUMEN
@@ -1010,9 +1084,9 @@ if st.session_state.get("active_has_run"):
         custom_port_str = st.session_state.get("cfg_custom_portfolio_symbols", "")
         save_col2.button(
             "Guardar",
-            use_container_width=True,
+            width="stretch",
             on_click=_on_save_clicked,
-            args=(analysis_mode, quote_asset, trade_direction, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
+            args=(analysis_mode, quote_asset, trade_direction, portfolio_allocation_mode, signal_mode, symbol, portfolio_symbols, custom_port_str, interval, start_date, end_date, context_len, horizon_len, step_size, stop_loss_pct, slippage_pct, funding_rate_pct, exit_mode, take_profit_pct, trailing_sl_pct, break_even, break_even_trigger_pct, threshold_pct, initial_capital, overlapping, max_positions, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier)
         )
         if "save_status" in st.session_state:
             msg_type, msg_text = st.session_state["save_status"]
@@ -1024,7 +1098,7 @@ if st.session_state.get("active_has_run"):
 
         st.markdown('<div class="section-label">CURVA DE EQUIDAD BENCHMARKING</div>', unsafe_allow_html=True)
         fig_equity = build_equity_chart(results, df_dict, context_len, float(initial_capital))
-        st.plotly_chart(fig_equity, use_container_width=True)
+        st.plotly_chart(fig_equity, width="stretch")
 
     # TAB 2 — GRÁFICOS AVANZADOS
     with tab2:
@@ -1041,7 +1115,7 @@ if st.session_state.get("active_has_run"):
 
         st.markdown('<div class="section-label">VELAS JAPONESAS + SEÑALES + DRAWDOWN + VOLUMEN</div>', unsafe_allow_html=True)
         fig_adv = build_advanced_chart(adv_df, adv_trades, adv_equity)
-        st.plotly_chart(fig_adv, use_container_width=True)
+        st.plotly_chart(fig_adv, width="stretch")
         st.markdown("**Leyenda de señales:**")
         leg_cols = st.columns(5)
         leg_cols[0].markdown("▲ **ENTER LONG**")
@@ -1055,7 +1129,7 @@ if st.session_state.get("active_has_run"):
         st.markdown('<div class="section-label">RETORNOS MENSUALES DE LA CARTERA</div>', unsafe_allow_html=True)
         fig_heat = build_monthly_heatmap(equity_df)
         if fig_heat is not None:
-            st.plotly_chart(fig_heat, use_container_width=True)
+            st.plotly_chart(fig_heat, width="stretch")
             st.caption("Verde = meses rentables · Rojo = meses con pérdidas.")
         else:
             st.info("No hay suficientes datos para generar el heatmap mensual.")
@@ -1065,7 +1139,7 @@ if st.session_state.get("active_has_run"):
         st.markdown('<div class="section-label">REGISTRO COMPLETO DE OPERACIONES & EXPORTACIÓN</div>', unsafe_allow_html=True)
         if not trades_df.empty:
             styled_df = style_trades(trades_df)
-            st.dataframe(styled_df, use_container_width=True, height=400)
+            st.dataframe(styled_df, width="stretch", height=400)
 
             # CSV Download Button
             csv_data = trades_df.to_csv(index=False).encode('utf-8')
@@ -1075,7 +1149,7 @@ if st.session_state.get("active_has_run"):
                 data=csv_data,
                 file_name=f"{file_prefix}_{interval}_trades_{datetime.date.today()}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
             entry_types = {'ENTER_LONG', 'ENTER_SHORT'}
@@ -1139,8 +1213,12 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Modo Análisis | `{analysis_mode}` |
 | Moneda Cotización | `{quote_asset}` |
 | Dirección Operaciones | `{trade_direction}` |
+| Asignación Cartera | `{portfolio_allocation_mode}` |
+| Evaluación Señal | `{signal_mode}` |
 | Activo(s) | `{activos_txt}` |
 | Intervalo | `{interval}` |
+| Slippage | `{slippage_pct*100:.2f}%` |
+| Funding Rate | `{funding_rate_pct*100:.2f}%` |
 | Context Length | `{context_len}` velas |
 | Horizon Length | `{horizon_len}` velas |
 | Paso de Evaluación | `{step_size}` velas |
@@ -1154,6 +1232,20 @@ Un modelo fundacional de series temporales univariantes entrenado por Google. Op
 | Capital Global | `${initial_capital:,}` USD |
 | Modo de Ejecución | {mode_label} |
 """)
+
+    # TAB 5 — MONTE CARLO
+    with tab5:
+        st.markdown('<div class="section-label">ANÁLISIS DE ESTRÉS DE MONTE CARLO (BOOTSTRAPPING)</div>', unsafe_allow_html=True)
+        fig_mc, mc_metrics = build_monte_carlo_chart(trades_df, float(initial_capital), num_simulations=1000)
+        if fig_mc is not None:
+            st.plotly_chart(fig_mc, width="stretch")
+            col_mc1, col_mc2, col_mc3, col_mc4 = st.columns(4)
+            col_mc1.metric("VaR (95%)", f"{mc_metrics['var_95']*100:.2f}%", help="Pérdida máxima esperada con 95% de confianza.")
+            col_mc2.metric("VaR (99%)", f"{mc_metrics['var_99']*100:.2f}%", help="Pérdida máxima esperada con 99% de confianza.")
+            col_mc3.metric("Conditional VaR (95%)", f"{mc_metrics['cvar_95']*100:.2f}%", help="Pérdida promedio en los peores 5% de los escenarios.")
+            col_mc4.metric("Probabilidad de Ruina", f"{mc_metrics['ruin_prob']:.1f}%", help="Probabilidad simulada de perder >50% del capital inicial.")
+        else:
+            st.info("No hay suficientes operaciones registradas para ejecutar las simulaciones de Monte Carlo.")
 
 else:
     # EMPTY STATE

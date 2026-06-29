@@ -7,7 +7,7 @@ class BacktestEngine:
         self.fee_rate = fee_rate
         self.trades = []
 
-    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None, symbol_name=""):
+    def run_backtest(self, df: pd.DataFrame, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None, symbol_name="", slippage_pct=0.0, funding_rate_pct=0.0, signal_mode="Punto Final"):
         """
         Runs a walk-forward backtest using TimesFM predictions for a single asset.
         trade_direction: 'Long & Short', 'Solo Long', or 'Solo Short'. Default is 'Long & Short'.
@@ -17,27 +17,38 @@ class BacktestEngine:
             raise ValueError("Dataset is too small for the given context_len and horizon_len.")
 
         if overlapping:
-            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name)
+            return self._run_backtest_overlapping(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name, slippage_pct=slippage_pct, funding_rate_pct=funding_rate_pct, signal_mode=signal_mode)
         else:
-            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name)
+            return self._run_backtest_single(df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=progress_callback, symbol_name=symbol_name, slippage_pct=slippage_pct, funding_rate_pct=funding_rate_pct, signal_mode=signal_mode)
 
-    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None):
+    def run_portfolio_backtest(self, df_dict: dict, model_predictor, horizon_len=24, stop_loss_pct=0.02, threshold_pct=0.01, step_size=6, take_profit_pct=0.04, overlapping=False, max_positions=5, trailing_sl=False, trailing_sl_pct=0.02, break_even=False, break_even_trigger_pct=0.015, dynamic_sizing=False, confidence_multiplier=1.5, uncertainty_filter=False, max_uncertainty_pct=0.05, adaptive_sl=False, volatility_multiplier=2.0, trade_direction="Long & Short", progress_callback=None, slippage_pct=0.0, funding_rate_pct=0.0, signal_mode="Punto Final", portfolio_allocation_mode="Equitativa (1/N)"):
         """
-        Runs a multi-asset portfolio backtest. Proportionally divides initial capital among assets,
+        Runs a multi-asset portfolio backtest. Proportionally divides initial capital among assets (1/N or Risk Parity),
         executes strategy per asset, and consolidates global portfolio metrics & equity curve.
         """
         if not df_dict:
             raise ValueError("df_dict is empty. Provide at least one asset DataFrame.")
 
         num_assets = len(df_dict)
-        asset_initial_cap = self.initial_capital / num_assets
-        
+        if portfolio_allocation_mode == "Paridad de Riesgo (Risk Parity)" and num_assets > 0:
+            asset_vols = {}
+            for sym, df_a in df_dict.items():
+                rets = df_a['close'].pct_change().dropna()
+                v_std = float(rets.std()) if len(rets) > 0 else 0.01
+                asset_vols[sym] = max(1e-5, v_std)
+            inv_vols = {sym: 1.0 / v for sym, v in asset_vols.items()}
+            sum_inv = sum(inv_vols.values())
+            asset_weights = {sym: inv_vols[sym] / sum_inv for sym in df_dict}
+        else:
+            asset_weights = {sym: 1.0 / num_assets for sym in df_dict}
+
         asset_results = {}
         all_trades_list = []
         total_filtered = 0
         equity_series_list = []
 
         for asset_idx, (symbol, df_asset) in enumerate(df_dict.items()):
+            asset_initial_cap = self.initial_capital * asset_weights[symbol]
             def make_asset_cb(a_idx, a_sym):
                 def asset_cb(curr, tot, msg):
                     if progress_callback:
@@ -55,7 +66,8 @@ class BacktestEngine:
                 dynamic_sizing=dynamic_sizing, confidence_multiplier=confidence_multiplier,
                 uncertainty_filter=uncertainty_filter, max_uncertainty_pct=max_uncertainty_pct,
                 adaptive_sl=adaptive_sl, volatility_multiplier=volatility_multiplier, trade_direction=trade_direction,
-                progress_callback=make_asset_cb(asset_idx, symbol), symbol_name=symbol
+                progress_callback=make_asset_cb(asset_idx, symbol), symbol_name=symbol,
+                slippage_pct=slippage_pct, funding_rate_pct=funding_rate_pct, signal_mode=signal_mode
             )
             
             # Tag trades with asset symbol
@@ -119,8 +131,8 @@ class BacktestEngine:
                 pass
         return {}
 
-    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name=""):
-        """Single-position backtest logic supporting trade direction filtering."""
+    def _run_backtest_single(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name="", slippage_pct=0.0, funding_rate_pct=0.0, signal_mode="Punto Final"):
+        """Single-position backtest logic supporting trade direction filtering, slippage, funding and AUC signals."""
         capital = self.initial_capital
         position = 0 # 0: flat, 1: long, -1: short
         entry_price = 0
@@ -130,6 +142,7 @@ class BacktestEngine:
         size_multiplier = 1.0
         active_sl_pct = stop_loss_pct
         filtered_count = 0
+        total_friction = self.fee_rate + float(slippage_pct)
         
         equity_curve = []
         forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size, progress_callback=progress_callback, symbol_name=symbol_name)
@@ -138,6 +151,10 @@ class BacktestEngine:
             current_idx = df.index[i]
             current_price = df['close'].iloc[i]
             
+            # Apply periodic funding rate deduction on open position
+            if position != 0 and funding_rate_pct > 0.0:
+                capital *= (1.0 - float(funding_rate_pct))
+
             # Record equity
             current_equity = capital
             if position == 1:
@@ -152,7 +169,7 @@ class BacktestEngine:
                 nonlocal capital, position
                 pnl_p = size_multiplier * (close_p - entry_price) / entry_price if position == 1 else size_multiplier * (entry_price - close_p) / entry_price
                 pnl_u = entry_cap_allocated * pnl_p
-                capital = current_equity * (1 - self.fee_rate)
+                capital = current_equity * (1 - total_friction)
                 self.trades.append({
                     'time': current_idx, 'type': trade_type, 'price': close_p,
                     'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard',
@@ -228,8 +245,11 @@ class BacktestEngine:
                 context_data = df['close'].iloc[i - context_len : i].values.astype(np.float32)
                 point_fc, quant_fc = model_predictor.predict(context_data)
                 
-            expected_price = point_fc[-1]
-            expected_move = (expected_price - current_price) / current_price
+            if signal_mode == "Trayectoria AUC" and len(point_fc) > 0:
+                expected_move = float(np.mean((point_fc - current_price) / current_price))
+            else:
+                expected_price = point_fc[-1]
+                expected_move = float((expected_price - current_price) / current_price)
             
             # Check direction filtering
             is_long_signal = expected_move > threshold_pct and trade_direction in ["Long & Short", "Solo Long"]
@@ -264,7 +284,7 @@ class BacktestEngine:
                         if q10_price > current_price:
                             size_multiplier = float(confidence_multiplier)
 
-                    capital *= (1 - self.fee_rate)
+                    capital *= (1 - total_friction)
                     entry_cap_allocated = capital
                     self.trades.append({'time': current_idx, 'type': 'ENTER_LONG', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
                 elif is_short_signal:
@@ -279,7 +299,7 @@ class BacktestEngine:
                         if q90_price < current_price:
                             size_multiplier = float(confidence_multiplier)
 
-                    capital *= (1 - self.fee_rate)
+                    capital *= (1 - total_friction)
                     entry_cap_allocated = capital
                     self.trades.append({'time': current_idx, 'type': 'ENTER_SHORT', 'price': current_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard'})
 
@@ -289,12 +309,12 @@ class BacktestEngine:
         if position == 1:
             pnl_p = size_multiplier * (final_price - entry_price) / entry_price
             pnl_u = entry_cap_allocated * pnl_p
-            capital = capital * (1 + pnl_p) * (1 - self.fee_rate)
+            capital = capital * (1 + pnl_p) * (1 - total_friction)
             self.trades.append({'time': final_idx, 'type': 'CLOSE_LONG_END', 'price': final_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard', 'pnl_pct': pnl_p, 'pnl_usd': pnl_u})
         elif position == -1:
             pnl_p = size_multiplier * (entry_price - final_price) / entry_price
             pnl_u = entry_cap_allocated * pnl_p
-            capital = capital * (1 + pnl_p) * (1 - self.fee_rate)
+            capital = capital * (1 + pnl_p) * (1 - total_friction)
             self.trades.append({'time': final_idx, 'type': 'CLOSE_SHORT_END', 'price': final_price, 'capital': capital, 'confidence': 'High' if size_multiplier > 1.0 else 'Standard', 'pnl_pct': pnl_p, 'pnl_usd': pnl_u})
 
         equity_curve.append((final_idx, capital))
@@ -308,17 +328,24 @@ class BacktestEngine:
             'metrics': metrics
         }
 
-    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name=""):
-        """Overlapping-positions backtest supporting trade direction filtering."""
+    def _run_backtest_overlapping(self, df, model_predictor, context_len, horizon_len, stop_loss_pct, threshold_pct, step_size, take_profit_pct, max_positions, trailing_sl, trailing_sl_pct, break_even, break_even_trigger_pct, dynamic_sizing, confidence_multiplier, uncertainty_filter, max_uncertainty_pct, adaptive_sl, volatility_multiplier, trade_direction, progress_callback=None, symbol_name="", slippage_pct=0.0, funding_rate_pct=0.0, signal_mode="Punto Final"):
+        """Overlapping-positions backtest supporting trade direction filtering, slippage, funding and AUC signals."""
         available_capital = self.initial_capital
         active_positions = []
         filtered_count = 0
         equity_curve = []
+        total_friction = self.fee_rate + float(slippage_pct)
         forecast_cache = self._precompute_forecasts(df, model_predictor, context_len, horizon_len, step_size, progress_callback=progress_callback, symbol_name=symbol_name)
 
         for i in range(context_len, len(df) - horizon_len, step_size):
             current_idx = df.index[i]
             current_price = df['close'].iloc[i]
+
+            # Apply periodic funding rate deduction on active positions
+            if len(active_positions) > 0 and funding_rate_pct > 0.0:
+                available_capital *= (1.0 - float(funding_rate_pct))
+                for pos in active_positions:
+                    pos['entry_capital'] *= (1.0 - float(funding_rate_pct))
 
             # ── Step 1: Check SL/TP/BE for all active positions ──
             positions_to_close = []
@@ -383,7 +410,7 @@ class BacktestEngine:
                 else:
                     pnl_p = size_mult * (pos['entry_price'] - current_price) / pos['entry_price']
                 pnl_u = pos['entry_capital'] * pnl_p
-                realized = pos['entry_capital'] * (1 + pnl_p) * (1 - self.fee_rate)
+                realized = pos['entry_capital'] * (1 + pnl_p) * (1 - total_friction)
                 available_capital += realized
                 self.trades.append({
                     'time': current_idx, 'type': close_type, 'price': current_price,
@@ -404,8 +431,11 @@ class BacktestEngine:
                     context_data = df['close'].iloc[i - context_len : i].values.astype(np.float32)
                     point_fc, quant_fc = model_predictor.predict(context_data)
                     
-                expected_price = point_fc[-1]
-                expected_move = (expected_price - current_price) / current_price
+                if signal_mode == "Trayectoria AUC" and len(point_fc) > 0:
+                    expected_move = float(np.mean((point_fc - current_price) / current_price))
+                else:
+                    expected_price = point_fc[-1]
+                    expected_move = float((expected_price - current_price) / current_price)
 
                 is_long_signal = expected_move > threshold_pct and trade_direction in ["Long & Short", "Solo Long"]
                 is_short_signal = expected_move < -threshold_pct and trade_direction in ["Long & Short", "Solo Short"]
@@ -421,7 +451,7 @@ class BacktestEngine:
 
                     remaining_slots = max_positions - len(active_positions)
                     alloc_capital = available_capital / remaining_slots
-                    alloc_capital_after_fee = alloc_capital * (1 - self.fee_rate)
+                    alloc_capital_after_fee = alloc_capital * (1 - total_friction)
                     available_capital -= alloc_capital
 
                     direction = 1 if is_long_signal else -1
@@ -475,7 +505,7 @@ class BacktestEngine:
             else:
                 pnl_p = size_mult * (pos['entry_price'] - final_price) / pos['entry_price']
             pnl_u = pos['entry_capital'] * pnl_p
-            realized = pos['entry_capital'] * (1 + pnl_p) * (1 - self.fee_rate)
+            realized = pos['entry_capital'] * (1 + pnl_p) * (1 - total_friction)
             available_capital += realized
             self.trades.append({
                 'time': final_idx, 'type': close_type, 'price': final_price,
